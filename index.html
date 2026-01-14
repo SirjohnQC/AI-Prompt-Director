@@ -825,16 +825,34 @@
 
         document.getElementById('copy-btn').addEventListener('click', () => {
             let text = "";
-            if (currentMode === 'json') text = jar.toString() || JSON.stringify(store.json, null, 2);
-            else if (currentMode === 'prompt') text = store.prompt;
-            else text = store.tags;
-            if (!text || text.startsWith("//")) return showNotification("⚠️ Nothing to copy", "warning");
+            
+            // FIX: Grab visible text from the editor first to capture manual edits
+            const editorContent = document.getElementById('editor').innerText;
+
+            if (currentMode === 'json') {
+                // For JSON mode, prioritize the code jar (formatted) content
+                text = jar.toString() || editorContent;
+            } else {
+                // For Prompt/Tags mode, trust the visible editor text
+                text = editorContent;
+            }
+
+            // Validation: Check if empty or just default placeholder text
+            if (!text || text.trim().startsWith("// Ready") || text.trim().startsWith("// Select")) {
+                return showNotification("⚠️ Nothing to copy", "warning");
+            }
+
             navigator.clipboard.writeText(text);
+            
+            // Visual Success Feedback
             const btn = document.getElementById('copy-btn');
             const orig = btn.innerHTML;
             btn.innerHTML = '<i class="fas fa-check"></i> COPIED';
             btn.classList.add('text-green-400', 'border-green-400');
-            setTimeout(() => { btn.innerHTML = orig; btn.classList.remove('text-green-400', 'border-green-400'); }, 1500);
+            setTimeout(() => { 
+                btn.innerHTML = orig; 
+                btn.classList.remove('text-green-400', 'border-green-400'); 
+            }, 1500);
         });
 
         els.tabJson.onclick = () => switchTab('json');
