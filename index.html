@@ -893,6 +893,7 @@
 
         els.actionBtn.onclick = async () => {
             if (currentMode === 'json') {
+                // Validation
                 if (inputMode === 'image' && !store.file && !store.url) return showNotification('⚠️ Upload an image or enter URL', 'warning');
                 if (inputMode === 'text' && !els.textPromptInput.value.trim()) return showNotification('⚠️ Enter a prompt to parse', 'warning');
 
@@ -922,13 +923,19 @@
                     const res = await fetch('/analyze', { method: 'POST', body: fd });
                     const data = await res.json();
                     if (data.error) throw new Error(data.error);
-                    if (els.refMode.checked && inputMode === 'image') data["reference_image_instruction"] = "Keep the same person from the reference image.";
+                    
+                    // --- FIX: Removed "&& inputMode === 'image'" so it works for Text Mode too ---
+                    if (els.refMode.checked) {
+                        data["reference_image_instruction"] = "Keep the same person from the reference image.";
+                    }
+                    
                     store.json = data;
                     jar.updateCode(JSON.stringify(data, null, 2));
                     updateHistoryUI();
                     showNotification(inputMode === 'image' ? '✨ Analysis Complete' : '✨ Prompt Parsed & Adapted', 'success');
                 } catch(e) { showNotification('❌ Analysis Failed: ' + e.message, 'error'); } finally { hideLoading(); }
             } 
+            // ... rest of the logic for prompt/tags remains the same
             else if (currentMode === 'prompt') {
                 if (!store.json) return showNotification('⚠️ Generate JSON first', 'warning');
                 showLoading("WRITING", "Writer Model: " + els.writerModel.value);
@@ -947,6 +954,7 @@
                 } catch(e) { showNotification('❌ Failed: ' + e.message, 'error'); } finally { hideLoading(); }
             }
             else if (currentMode === 'tags') {
+                // ... (Tags logic stays the same) ...
                 if (!store.file && !store.url) return showNotification('⚠️ Upload an image', 'warning');
                 showLoading("TAGGING", "Tagger Model: " + els.taggerModel.value);
                 const fd = new FormData();

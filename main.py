@@ -18,7 +18,6 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import ollama
 import uvicorn
-import subprocess
 
 try:
     from enhanced_tag_system import generate_tags_enhanced 
@@ -27,8 +26,6 @@ except ImportError:
     logging.warning("⚠️ Enhanced modules not found. Using fallbacks.")
     generate_tags_enhanced = None
     generate_narrative_prompt = None
-    
-GITHUB_VERSION_URL = "https://raw.githubusercontent.com/SirjohnQC/AI-Prompt-Director/main/version.txt"
 
 # --- CONFIGURATION ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -70,6 +67,8 @@ DEFAULT_MODELS = ["minicpm-v", "llava:v1.6", "qwen3-vl", "llama3.2"]
 GOOGLE_KEY = os.getenv("GOOGLE_API_KEY")
 FAL_KEY = os.getenv("FAL_KEY")
 XAI_KEY = os.getenv("XAI_API_KEY")
+# UPDATE THIS TO YOUR REPO:
+GITHUB_VERSION_URL = "https://raw.githubusercontent.com/SirjohnQC/AI-Prompt-Director/main/version.txt"
 
 class CloudGenRequest(BaseModel):
     prompt: str
@@ -114,7 +113,6 @@ def extract_json_from_text(text: str) -> Dict[str, Any]:
             return json.loads(json_str)
         except json.JSONDecodeError:
             pass 
-        # Repair logic
         json_str = re.sub(r'(?<=[}\]"0-9e])\s+(?=")', ', ', json_str)
         json_str = re.sub(r'(?<=true)\s+(?=")', ', ', json_str)
         json_str = re.sub(r'(?<=false)\s+(?=")', ', ', json_str)
@@ -163,21 +161,38 @@ async def read_root(request: Request):
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
+# --- VERSION CHECK ---
+@app.get("/version")
+async def check_version():
+    try:
+        local_v = load_json_file(BASE_DIR / "version.txt", "1.0")
+        if isinstance(local_v, dict): local_v = "1.0"
+        r = requests.get(GITHUB_VERSION_URL, timeout=2)
+        remote_v = r.text.strip() if r.status_code == 200 else local_v
+        return {"local": str(local_v).strip(), "remote": str(remote_v).strip(), "update_available": str(local_v).strip() != str(remote_v).strip()}
+    except Exception as e:
+        return {"local": "1.0", "remote": "Unknown", "error": str(e)}
+
+@app.post("/trigger-update")
+async def trigger_update():
+    try:
+        if os.name == 'nt': subprocess.Popen("start cmd /c UPDATE.bat", shell=True)
+        else: subprocess.Popen(["sh", "UPDATE.sh"])
+        os.kill(os.getpid(), signal.SIGTERM)
+        return {"status": "updating"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 # --- CLOUD IMAGE GENERATION ---
 @app.post("/generate-image-cloud")
 async def generate_image_cloud(req: CloudGenRequest):
     logger.info(f"Cloud Gen Request: {req.model_provider}")
     
-    # 1. HANDLE NANO BANANA (Google Gemini)
     if req.model_provider == "nanobana":
         key = req.api_key or GOOGLE_KEY
         if not key: return {"status": "error", "message": "Missing Google API Key"}
-        
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={key}"
-        payload = {
-            "contents": [{"parts": [{"text": "Generate a high quality image: " + req.prompt}]}],
-            "generationConfig": {"sampleCount": 1}
-        }
+        payload = {"contents": [{"parts": [{"text": "Generate a high quality image: " + req.prompt}]}], "generationConfig": {"sampleCount": 1}}
         try:
             r = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=45)
             if r.status_code != 200: return {"status": "error", "message": f"Google API Error: {r.text}"}
@@ -185,51 +200,33 @@ async def generate_image_cloud(req: CloudGenRequest):
             try:
                 for candidate in data.get("candidates", []):
                     for part in candidate.get("content", {}).get("parts", []):
-                        if "inlineData" in part:
-                            return {"status": "success", "image": part["inlineData"]["data"], "provider": "nanobana"}
+                        if "inlineData" in part: return {"status": "success", "image": part["inlineData"]["data"], "provider": "nanobana"}
             except: pass
             return {"status": "error", "message": "No image found in Google response."}
         except Exception as e: return {"status": "error", "message": str(e)}
 
-    # 2. HANDLE GROK (xAI)
     elif req.model_provider == "grok":
         key = req.api_key or XAI_KEY
         if not key: return {"status": "error", "message": "Missing xAI API Key"}
         url = "https://api.x.ai/v1/images/generations"
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         final_prompt = req.prompt + (f" --no {req.negative_prompt}" if req.negative_prompt else "")
-        
-        payload = {
-            "model": "grok-2-image",
-            "prompt": final_prompt,
-            "n": 1,
-            "size": "1024x1024",
-            "response_format": "b64_json"
-        }
+        payload = {"model": "grok-2-image", "prompt": final_prompt, "n": 1, "size": "1024x1024", "response_format": "b64_json"}
         try:
             r = requests.post(url, json=payload, headers=headers, timeout=60)
             if r.status_code != 200: return {"status": "error", "message": f"Grok API Error: {r.text}"}
             data = r.json()
-            if "data" in data and len(data["data"]) > 0:
-                return {"status": "success", "image": data["data"][0]["b64_json"], "provider": "grok"}
+            if "data" in data and len(data["data"]) > 0: return {"status": "success", "image": data["data"][0]["b64_json"], "provider": "grok"}
             return {"status": "error", "message": "No image returned from Grok"}
         except Exception as e: return {"status": "error", "message": str(e)}
 
-    # 3. HANDLE FLUX / ILLUSTRIOUS (via Fal.ai)
     elif req.model_provider in ["flux", "illustrious"]:
         key = req.api_key or FAL_KEY
         if not key: return {"status": "error", "message": "Missing Fal.ai API Key"}
         endpoint = "fal-ai/flux/dev" if req.model_provider == "flux" else "fal-ai/illustrious-xl"
         headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
-        payload = {
-            "prompt": req.prompt,
-            "image_size": {"width": req.width, "height": req.height},
-            "num_inference_steps": 28,
-            "guidance_scale": 3.5,
-            "enable_safety_checker": False
-        }
+        payload = {"prompt": req.prompt, "image_size": {"width": req.width, "height": req.height}, "num_inference_steps": 28, "guidance_scale": 3.5, "enable_safety_checker": False}
         if req.negative_prompt and req.model_provider == "illustrious": payload["negative_prompt"] = req.negative_prompt
-
         try:
             r = requests.post(f"https://queue.fal.run/{endpoint}", json=payload, headers=headers)
             if r.status_code != 200: return {"status": "error", "message": f"Fal Error: {r.text}"}
@@ -254,8 +251,7 @@ async def get_models():
         info = ollama.list()
         models = [m['model'] for m in info.get('models', [])] or DEFAULT_MODELS
         return {"models": models, "favorite": ""}
-    except:
-        return {"models": DEFAULT_MODELS, "favorite": ""}
+    except: return {"models": DEFAULT_MODELS, "favorite": ""}
 
 @app.delete("/models/{model_name}")
 async def delete_model(model_name: str):
@@ -264,7 +260,7 @@ async def delete_model(model_name: str):
         return {"status": "deleted"}
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
-# --- ANALYZE ENDPOINT (UPDATED FOR COLORS & QUALITY) ---
+# --- ANALYZE ENDPOINT (FIXED GLASSES) ---
 @app.post("/analyze")
 async def analyze_image(
     file: Optional[UploadFile] = File(None),
@@ -291,49 +287,18 @@ async def analyze_image(
             logger.info("Parsing Text Prompt...")
             filename = "text_import.json"
             parser_model = "llama3.2" 
-            
-            parser_system = """You are a Prompt Engineer. Convert the user's raw text description into a Structured JSON Object.
-            Map the text to these categories:
-            - subject (age, ethnicity, hair, makeup, features)
-            - outfit (clothing details)
-            - pose (action, camera angle)
-            - environment (background, lighting)
-            - style_and_realism (art style, medium)
-            - colors_and_tone (dominant colors, lighting, mood)
-            
-            JSON OUTPUT FORMAT:
-            {
-              "subject": { "name": "Unknown", "age": "...", "ethnicity": "...", "hair": {...}, "makeup": "..." },
-              "outfit": { ... },
-              "pose": { ... },
-              "environment": { ... },
-              "style_and_realism": { ... },
-              "colors_and_tone": { "palette": "...", "lighting": "..." }
-            }
-            Return ONLY valid JSON."""
-            
-            response = ollama.chat(
-                model=parser_model,
-                messages=[{'role': 'system', 'content': parser_system}, {'role': 'user', 'content': text_prompt}],
-                options={"temperature": 0.1},
-                format="json"
-            )
+            parser_system = """You are a Prompt Engineer. Convert text to JSON.
+            Map to: subject (age, hair, makeup), outfit, pose, environment, style_and_realism, colors_and_tone.
+            JSON FORMAT: { "subject": {...}, "outfit": {...}, "pose": {...}, "environment": {...}, "style_and_realism": {...}, "colors_and_tone": {...} }"""
+            response = ollama.chat(model=parser_model, messages=[{'role': 'system', 'content': parser_system}, {'role': 'user', 'content': text_prompt}], options={"temperature": 0.1}, format="json")
             data = extract_json_from_text(response['message']['content'])
 
         # --- PATH B: IMAGE ANALYSIS ---
         else:
             temp_path = process_uploaded_image(file, image_url)
             filename = file.filename if file else "url_image.jpg"
-            
-            # --- UPDATED PROMPT: ASKING FOR COLORS & QUALITY ---
-            system_prompt = """Analyze this image in EXTREME DETAIL and return a JSON object.
-            
-            CRITICAL INSTRUCTIONS:
-            1. Describe TEXTURES, FABRICS, LIGHTING, and precise BODY POSITION.
-            2. Look specifically for MAKEUP details.
-            3. Analyze the COLORS and LIGHTING explicitly.
-            4. Analyze the IMAGE QUALITY (blur, grain, resolution) truthfully.
-            
+            system_prompt = """Analyze image in EXTREME DETAIL. Return JSON.
+            INSTRUCTIONS: Describe textures, lighting, body position, makeup, and colors.
             JSON STRUCTURE:
             {
               "subject": { "name": "Unknown", "age": "...", "ethnicity": "...", "hair": {...}, "skin": "...", "makeup": "..." },
@@ -344,15 +309,9 @@ async def analyze_image(
               "style_and_realism": { "visual_style": "...", "realism": "..." },
               "colors_and_tone": { "dominant_palette": "...", "contrast": "...", "grading": "..." },
               "quality_and_technical_details": { "resolution": "...", "sharpness": "...", "defects": "..." }
-            }
-            Return ONLY valid JSON."""
-            
+            }"""
             logger.info(f"Analyzing with {model}")
-            response = ollama.chat(
-                model=model,
-                messages=[{'role': 'user', 'content': system_prompt, 'images': [str(temp_path)]}],
-                options={"temperature": 0.2, "num_predict": 2048}
-            )
+            response = ollama.chat(model=model, messages=[{'role': 'user', 'content': system_prompt, 'images': [str(temp_path)]}], options={"temperature": 0.2, "num_predict": 2048})
             data = extract_json_from_text(response['message']['content'])
 
         # --- DATA CLEANUP ---
@@ -369,19 +328,15 @@ async def analyze_image(
             if persona_id in all_personas:
                 persona = all_personas[persona_id]
                 p_subject = persona.get("subject", {})
-                
                 data["subject"]["name"] = persona.get("name", "Character")
                 if p_subject.get("age"): data["subject"]["age"] = p_subject["age"]
                 if p_subject.get("ethnicity"): data["subject"]["ethnicity"] = p_subject["ethnicity"]
                 if p_subject.get("body_type"): data["subject"]["body_type"] = p_subject["body_type"]
-                
                 for k in ["face_structure", "eyes", "nose", "lips", "skin", "makeup"]:
                     if p_subject.get(k) and str(p_subject[k]).lower() not in ["none", "detected", ""]:
                         data["subject"][k] = p_subject[k]
-                
                 if p_subject.get("tattoos") and "none" not in str(p_subject["tattoos"]).lower(): 
                     data["subject"]["tattoos"] = p_subject.get("tattoos")
-                
                 if "hair" in p_subject: data["subject"]["hair"] = p_subject["hair"]
 
         # --- OVERRIDES ---
@@ -392,21 +347,38 @@ async def analyze_image(
             if "hair" not in data["subject"]: data["subject"]["hair"] = {}
             data["subject"]["hair"]["color"] = hair_color_override
         if makeup_override != "auto": data["subject"]["makeup"] = makeup_override
+        
+        # --- FIXED GLASSES LOGIC (Smart Cleanup) ---
         if glasses_override != "auto":
             if "outfit" not in data: data["outfit"] = {}
+            if "subject" not in data: data["subject"] = {}
+            
             acc = data["outfit"].get("accessories", "")
+            eyes = data["subject"].get("eyes", "")
+
+            # Regex to remove existing glasses mentions (e.g. "no glasses", "sunglasses", "round glasses")
+            # We remove them first to avoid "no glasses, wearing glasses" conflicts
+            remove_pattern = r"(?i)(,\s*)?(no\s+)?(reading\s+|sun)?glasses(,\s*)?"
+            
+            clean_acc = re.sub(remove_pattern, "", acc).strip(", ")
+            clean_eyes = re.sub(remove_pattern, "", eyes).strip(", ")
+
             if glasses_override == "none":
-                data["outfit"]["accessories"] = (acc + ", no glasses").replace("glasses", "").replace("sunglasses", "")
+                # User specifically wants NO glasses
+                data["outfit"]["accessories"] = (clean_acc + ", no glasses").strip(", ")
+                data["subject"]["eyes"] = clean_eyes # Just remove glasses mention from eyes
             else:
-                data["outfit"]["accessories"] = acc + ", " + glasses_override
-        
+                # User wants specific glasses
+                # Add to outfit
+                data["outfit"]["accessories"] = f"{clean_acc}, {glasses_override}".strip(", ")
+                # Add to eyes (crucial for prompt generation)
+                data["subject"]["eyes"] = f"{clean_eyes}, wearing {glasses_override}".strip(", ")
+
         if time_override != "auto": data["environment"]["time_of_day"] = time_override
         if expr_override != "auto": data["pose"]["expression"] = expr_override
         if ratio_override != "auto": data["aspect_ratio_and_output"] = {"aspect_ratio": ratio_override}
         if style_override != "auto": data["style_and_realism"]["visual_style"] = style_override
 
-        # --- FIXED QUALITY LOGIC ---
-        # Only overwrite if user explicitly chose "Best", otherwise trust the AI analysis
         if quality_override == "Best":
             data["quality_and_technical_details"] = {"resolution": "8k uhd", "detail": "maximum", "sharpness": "high"}
         elif quality_override == "Raw":
@@ -571,45 +543,12 @@ async def clear_history():
 
 @app.post("/shutdown")
 async def shutdown():
+    import threading
     def stop_server():
         time.sleep(1)
         os.kill(os.getpid(), signal.SIGTERM)
-    import threading
     threading.Thread(target=stop_server, daemon=True).start()
     return {"message": "Shutting down"}
-    
-@app.get("/version")
-async def check_version():
-    """Checks local vs remote version."""
-    try:
-        # Get Local Version
-        local_v = load_json_file(BASE_DIR / "version.txt", "1.0")
-        if isinstance(local_v, dict): local_v = "1.0" # Handle fallback
-        
-        # Get Remote Version
-        # We use a short timeout so the app doesn't hang if offline
-        r = requests.get(GITHUB_VERSION_URL, timeout=2)
-        remote_v = r.text.strip() if r.status_code == 200 else local_v
-        
-        return {"local": str(local_v).strip(), "remote": str(remote_v).strip(), "update_available": str(local_v).strip() != str(remote_v).strip()}
-    except Exception as e:
-        return {"local": "1.0", "remote": "Unknown", "error": str(e)}
-
-@app.post("/trigger-update")
-async def trigger_update():
-    """Launches the updater script and kills the server."""
-    try:
-        # This will run the batch file that handles the git pull
-        if os.name == 'nt': # Windows
-            subprocess.Popen("start cmd /c UPDATE.bat", shell=True)
-        else: # Mac/Linux
-            subprocess.Popen(["sh", "UPDATE.sh"])
-            
-        # Kill current server
-        os.kill(os.getpid(), signal.SIGTERM)
-        return {"status": "updating"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
