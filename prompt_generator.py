@@ -11,13 +11,12 @@ logger = logging.getLogger(__name__)
 
 def generate_narrative_prompt(json_data: dict, preferred_model: str = None) -> str:
     """
-    Generates a descriptive, narrative-style prompt from a JSON object.
+    Generates a descriptive, narrative-style prompt from JSON.
+    Now with adaptive style based on detected aesthetic.
     """
     
-    # 1. Use User Selection if provided
     selected_model = preferred_model
     
-    # 2. If no selection (or 'auto'), try to find a good text model
     if not selected_model or selected_model == "auto":
         try:
             available_models = [m['model'] for m in ollama.list()['models']]
@@ -30,39 +29,63 @@ def generate_narrative_prompt(json_data: dict, preferred_model: str = None) -> s
             pass
             
     if not selected_model:
-        selected_model = "llama3.2" # Hard fallback
+        selected_model = "llama3.2"
         
-    logger.info(f"Generating narrative prompt using {selected_model}")
-
-    # 2. Construct the "Novel Writer" Prompt
-    # This prompt forces the AI to break out of the "JSON List" mindset
-    system_msg = """You are a Visual Novelist and expert Image Prompter (Flux/Midjourney style).
-    Your goal is to write a Vivid, Natural Language Description of the character and scene.
-    
-    RULES:
-    1. DO NOT output a comma-separated list (e.g. "Oval face, green eyes, ...").
-    2. Write in FULL SENTENCES (e.g. "She has an oval face with striking green eyes...").
-    3. CONNECT the details naturally. Flow from Subject -> Outfit -> Pose -> Environment -> Mood.
-    4. Focus on lighting, texture, and atmosphere.
-    5. Output ONE single, fluid paragraph.
-    """
-    
-    # We strip the reference instruction for the prompt generation to keep the story clean
-    # (The frontend appends it purely for the technical instruction if needed, 
-    # but for the visual description, we want pure imagery).
+    # Extract metadata
     clean_data = json_data.copy()
+    
     if "reference_image_instruction" in clean_data:
         del clean_data["reference_image_instruction"]
+    
+    # Extract aesthetic for adaptive prompting
+    aesthetic = clean_data.get("style", {}).get("aesthetic", "")
+    vibe = clean_data.get("style", {}).get("vibe", "")
+    
+    meta_tags = []
+    if "meta_tokens" in clean_data:
+        meta_raw = clean_data.pop("meta_tokens")
+        if isinstance(meta_raw, list):
+            meta_tags = meta_raw
+        elif isinstance(meta_raw, str):
+            meta_tags = [meta_raw]
 
-    user_msg = f"""Convert this character data into a rich, descriptive prompt for Flux/Midjourney.
+    # Adaptive system message based on detected style
+    style_guidance = ""
+    if aesthetic:
+        style_guidance = f"\nThe aesthetic is '{aesthetic}' with a '{vibe}' vibe. Incorporate this mood into your writing style."
 
-    DATA:
-    {json.dumps(clean_data, indent=2)}
+    system_msg = f"""You are a Visual Novelist and expert Image Prompter (Flux/Midjourney/Grok style).
+Your goal is to write a Vivid, Natural Language Description based on JSON data.
 
-    Desired Output Format Example:
-    "A stunning medium shot of [Name], a [Age] year old [Ethnicity] woman with [Feature]. She is wearing [Outfit], crouching on a wooden bench. The setting is [Environment] with [Lighting]. The image has a [Style] aesthetic with [Quality] details."
+RULES:
+1. Write ONE fluid, cinematic paragraph (NO bullet points)
+2. Use FULL SENTENCES with natural flow
+3. Structure: Subject → Appearance → Outfit → Pose → Environment → Lighting → Mood
+4. Be SPECIFIC: "crimson silk blouse" not "red shirt", "shoulder-length chestnut waves" not "brown hair"
+5. Include sensory details: textures, lighting quality, atmosphere
+6. Camera angles and technical details should feel natural ("captured in a medium shot" not "camera: medium")
+7. Let the aesthetic guide your tone:{style_guidance}
+8. Do NOT use technical quality terms ('8k', 'masterpiece') - they're added separately
 
-    WRITE THE PROMPT:"""
+QUALITY MARKERS:
+- Specific color names and fabric types
+- Precise physical descriptions
+- Atmospheric/mood language
+- Spatial relationships
+- Lighting characteristics"""
+    
+    # Build context summary for better prompting
+    subject_name = clean_data.get("subject", {}).get("name", "the subject")
+    
+    user_msg = f"""Convert this data into a rich, descriptive image prompt for {subject_name}.
+
+DATA:
+{json.dumps(clean_data, indent=2)}
+
+EXAMPLE FORMAT (adapt to your data):
+"A medium cinematic shot captures [Name], a [age] [ethnicity] woman with [specific hair description], in a [vibe] [aesthetic] setting. She wears a [specific outfit with fabrics and colors], [pose description with body language]. The [environment with specific details] is bathed in [lighting description with direction and quality], creating [atmosphere]. Her [expression] conveys [emotional state], while [notable details like accessories or makeup]."
+
+Write a flowing, vivid paragraph that brings this scene to life:"""
 
     logger.info(f"Generating narrative prompt using {selected_model}")
 
@@ -74,18 +97,28 @@ def generate_narrative_prompt(json_data: dict, preferred_model: str = None) -> s
                 {'role': 'user', 'content': user_msg}
             ],
             options={
-                "temperature": 0.7, # Creativity allowed
-                "num_predict": 1024
+                "temperature": 0.75,  # Slightly higher for more creative language
+                "num_predict": 1536,   # More space for detailed prose
+                "top_p": 0.92,
+                "repeat_penalty": 1.15  # Prevent repetitive phrasing
             }
         )
         
         prompt_text = response['message']['content'].strip()
         
-        # Cleanup quotes
+        # Cleanup
         if prompt_text.startswith('"') and prompt_text.endswith('"'):
             prompt_text = prompt_text[1:-1]
-        if prompt_text.startswith("Here is the prompt:"):
-            prompt_text = prompt_text.replace("Here is the prompt:", "").strip()
+        
+        # Remove any lingering markdown
+        prompt_text = prompt_text.replace('**', '')
+
+        # Append meta tokens
+        if meta_tags:
+            # Deduplicate tags
+            unique_tags = list(dict.fromkeys(meta_tags))
+            meta_string = ", ".join(unique_tags)
+            prompt_text = f"{prompt_text}, {meta_string}"
             
         return prompt_text
 

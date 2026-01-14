@@ -199,9 +199,15 @@
             <input id="p-name" class="w-full bg-[#0d1117] border border-white/10 rounded p-3 text-white text-sm focus:border-purple-500 outline-none" placeholder="e.g. Sarah" required>
         </div>
         
-        <div id="scan-preview-container" class="hidden relative h-64 rounded-lg overflow-hidden border border-white/10 mb-4 bg-black/50">
+        <div id="scan-preview-container" class="hidden relative h-64 rounded-lg overflow-hidden border border-white/10 mb-4 bg-black/50 group">
             <img id="scan-blur" class="absolute inset-0 w-full h-full object-cover opacity-30 blur-md">
             <img id="scan-main" class="absolute inset-0 w-full h-full object-contain p-2">
+            
+            <div class="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center backdrop-blur-[2px]">
+                <button id="trigger-rescan" class="bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded-lg font-bold shadow-lg transform scale-95 group-hover:scale-100 transition-all border border-purple-400/30">
+                    <i class="fas fa-camera mr-2"></i>Change Photo & Rescan
+                </button>
+            </div>
         </div>
 
         <div id="scan-drop" class="border-2 border-dashed border-purple-500/30 rounded-lg h-32 flex items-center justify-center mb-4 cursor-pointer text-slate-400 hover:border-purple-500 hover:text-purple-400 transition-all bg-[#0d1117]">
@@ -333,7 +339,7 @@
     </div>
 </div>
 
-    <script type="module">
+<script type="module">
         import { CodeJar } from 'https://medv.io/codejar/codejar.js';
         
         const jar = CodeJar(document.getElementById('editor'), (e) => {
@@ -345,8 +351,9 @@
         let store = { json: null, prompt: null, tags: null, file: null, url: null };
         let allPersonas = [];
         let scanFile = null;
-        let inputMode = 'image'; // 'image' or 'text'
-        
+        let inputMode = 'image'; 
+        let rescanTargetId = null;
+
         const els = {
             modeImage: document.getElementById('mode-image'),
             modeText: document.getElementById('mode-text'),
@@ -406,7 +413,7 @@
             historyList: document.getElementById('history-list'),
             clearHistory: document.getElementById('clear-history-btn'),
             downloadBtn: document.getElementById('download-btn'),
-            // Persona Fields
+            copyBtn: document.getElementById('copy-btn'),
             pAge: document.getElementById('p-age'),
             pEthnicity: document.getElementById('p-ethnicity'),
             pBody: document.getElementById('p-body'),
@@ -423,7 +430,7 @@
             scanPreviewCont: document.getElementById('scan-preview-container'),
             scanBlur: document.getElementById('scan-blur'),
             scanMain: document.getElementById('scan-main'),
-            // Cloud Elements
+            triggerRescan: document.getElementById('trigger-rescan'),
             settingsBtn: document.getElementById('settings-btn'),
             settingsModal: document.getElementById('settings-modal'),
             saveKeysBtn: document.getElementById('save-keys-btn'),
@@ -439,8 +446,85 @@
             cloudResult: document.getElementById('cloud-result-img'),
             cloudError: document.getElementById('cloud-error')
         };
+
+        // --- HANDLERS (Restored Tab Clicks & Drag Drop) ---
+        els.tabJson.onclick = () => switchTab('json');
+        els.tabPrompt.onclick = () => switchTab('prompt');
+        els.tabTags.onclick = () => switchTab('tags');
+
+        function handleFile(f) {
+            if(!f) return;
+            store.file = f; store.url = null; els.urlInput.value = "";
+            const r = new FileReader();
+            r.onload = (ev) => {
+                els.thumbBlur.src = ev.target.result;
+                els.thumbMain.src = ev.target.result;
+                els.preview.classList.remove('hidden');
+                els.empty.classList.add('hidden');
+            };
+            r.readAsDataURL(f);
+        }
+
+        els.file.onchange = (e) => handleFile(e.target.files[0]);
+        els.drop.onclick = () => els.file.click();
         
-        // --- MODE SWITCHING ---
+        els.drop.addEventListener('dragover', (e) => { e.preventDefault(); els.drop.classList.add('drop-zone-active'); });
+        els.drop.addEventListener('dragleave', () => els.drop.classList.remove('drop-zone-active'));
+        els.drop.addEventListener('drop', (e) => { 
+            e.preventDefault(); 
+            els.drop.classList.remove('drop-zone-active'); 
+            if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); 
+        });
+
+        els.clearImg.onclick = (e) => { 
+            e.stopPropagation(); 
+            store.file = null; store.url = null; els.urlInput.value = ""; 
+            els.preview.classList.add('hidden'); els.empty.classList.remove('hidden'); 
+        };
+
+        els.urlBtn.onclick = () => {
+            const url = els.urlInput.value.trim();
+            if(!url) return;
+            store.url = url; store.file = null;
+            els.thumbBlur.src = url; els.thumbMain.src = url;
+            els.preview.classList.remove('hidden'); els.empty.classList.add('hidden');
+        };
+        els.urlInput.addEventListener('keypress', (e) => { if(e.key === 'Enter') els.urlBtn.click(); });
+
+        els.copyBtn.addEventListener('click', () => {
+            let text = "";
+            const editorContent = document.getElementById('editor').innerText;
+            if (currentMode === 'json') text = jar.toString() || editorContent;
+            else text = editorContent;
+            if (!text || text.trim().startsWith("//") || text.trim().length === 0) return showNotification("⚠️ Nothing to copy", "warning");
+            navigator.clipboard.writeText(text);
+            const orig = els.copyBtn.innerHTML;
+            els.copyBtn.innerHTML = '<i class="fas fa-check"></i> COPIED';
+            els.copyBtn.classList.add('text-green-400', 'border-green-400');
+            setTimeout(() => { els.copyBtn.innerHTML = orig; els.copyBtn.classList.remove('text-green-400', 'border-green-400'); }, 1500);
+        });
+
+        // --- NEW: RESCAN LOGIC ---
+        if(els.triggerRescan) els.triggerRescan.onclick = () => els.scanInput.click();
+
+        els.scanInput.onchange = (e) => {
+            if(e.target.files[0]) {
+                scanFile = e.target.files[0];
+                const r = new FileReader();
+                r.onload = (ev) => {
+                    els.scanBlur.src = ev.target.result;
+                    els.scanMain.src = ev.target.result;
+                    els.scanPreviewCont.classList.remove('hidden');
+                    els.scanMsg.classList.add('hidden');
+                    els.scanBtn.classList.remove('hidden');
+                    els.scanBtn.innerText = "UPDATE & RESCAN";
+                    els.scanDrop.classList.add('hidden'); 
+                };
+                r.readAsDataURL(scanFile);
+            }
+        };
+
+        // --- UI HELPERS ---
         function setInputMode(mode) {
             inputMode = mode;
             if (mode === 'image') {
@@ -461,7 +545,6 @@
         els.modeImage.onclick = () => setInputMode('image');
         els.modeText.onclick = () => setInputMode('text');
 
-        // --- DEFINITIONS FIRST ---
         function showNotification(message, type = 'info') {
             const n = document.createElement('div');
             n.className = `fixed top-4 right-4 z-[9999] px-6 py-4 rounded-lg border shadow-lg transform transition-all duration-300 translate-x-[400px] bg-[#161b22] ${type === 'success' ? 'border-green-500/30 text-green-400' : type === 'error' ? 'border-red-500/30 text-red-400' : 'border-cyan-500/30 text-cyan-400'}`;
@@ -487,12 +570,14 @@
             els.managerList.innerHTML = allPersonas.map(p => `
                 <div class="flex justify-between items-center bg-[#0d1117] p-3 rounded border border-white/5 hover:border-purple-500/30 group transition-all mb-2">
                     <div class="flex items-center gap-3">
-                        <img src="/persona-image/${p.id}" class="w-8 h-8 rounded-full object-cover bg-slate-700" onerror="this.style.display='none'">
+                        <div class="relative w-8 h-8">
+                            <img src="/persona-image/${p.id}?t=${Date.now()}" class="w-8 h-8 rounded-full object-cover bg-slate-700" onerror="this.style.display='none'">
+                        </div>
                         <span class="text-sm text-slate-200 font-medium">${p.name}</span>
                     </div>
                     <div class="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onclick="window.editPersona('${p.id}')" class="text-xs bg-slate-800 hover:bg-cyan-600 text-slate-400 hover:text-white px-2 py-1 rounded"><i class="fas fa-pen"></i></button>
-                        <button onclick="window.deletePersona('${p.id}')" class="text-xs bg-slate-800 hover:bg-red-600 text-slate-400 hover:text-white px-2 py-1 rounded"><i class="fas fa-trash"></i></button>
+                        <button onclick="window.editPersona('${p.id}')" class="text-xs bg-slate-800 hover:bg-cyan-600 text-slate-400 hover:text-white px-2 py-1 rounded" title="Edit"><i class="fas fa-pen"></i></button>
+                        <button onclick="window.deletePersona('${p.id}')" class="text-xs bg-slate-800 hover:bg-red-600 text-slate-400 hover:text-white px-2 py-1 rounded" title="Delete"><i class="fas fa-trash"></i></button>
                     </div>
                 </div>
             `).join('');
@@ -553,465 +638,51 @@
             }
         }
 
-        function handleFile(f) {
-            if(!f) return;
-            store.file = f; store.url = null; els.urlInput.value = "";
-            const r = new FileReader();
-            r.onload = (ev) => {
-                els.thumbBlur.src = ev.target.result;
-                els.thumbMain.src = ev.target.result;
-                els.preview.classList.remove('hidden');
-                els.empty.classList.add('hidden');
-            };
-            r.readAsDataURL(f);
-        }
-
         function openModal(mode, pid=null) {
             els.modal.classList.remove('hidden');
             scanFile = null;
-            
             if (mode === 'create') {
-                // CREATE MODE
                 els.modalTitle.innerText = "New Persona";
-                els.pName.value = "";
-                els.editPid.value = "";
-                
-                // Show Upload, Hide Preview & Fields
-                els.scanMsg.classList.add('hidden');
-                els.scanPreviewCont.classList.add('hidden'); 
-                els.manualFields.classList.add('hidden'); 
-                els.scanBtn.innerText = "SCAN & AUTO-FILL";
-                els.scanBtn.classList.remove('hidden');
-                els.scanDrop.classList.remove('hidden');
-                
+                els.pName.value = ""; els.editPid.value = "";
+                els.scanMsg.classList.add('hidden'); els.scanPreviewCont.classList.add('hidden'); els.manualFields.classList.add('hidden'); 
+                els.scanBtn.innerText = "SCAN & AUTO-FILL"; els.scanBtn.classList.remove('hidden'); els.scanDrop.classList.remove('hidden');
             } else {
-                // EDIT MODE
                 els.modalTitle.innerText = "Edit Persona";
                 const p = allPersonas.find(x => String(x.id) === String(pid));
-                if (!p) { console.error("Persona not found for ID:", pid); return; }
-
-                els.pName.value = p.name || "Unknown";
-                els.editPid.value = pid;
-                
-                // Clean UI
-                els.scanDrop.classList.add('hidden'); 
-                els.scanBtn.classList.add('hidden');
-                els.scanMsg.classList.add('hidden');
-
-                // SHOW Preview and LOAD Image
+                if (!p) { console.error("Persona not found"); return; }
+                els.pName.value = p.name || "Unknown"; els.editPid.value = pid;
+                els.scanDrop.classList.add('hidden'); els.scanBtn.classList.add('hidden'); els.scanMsg.classList.add('hidden');
                 els.scanPreviewCont.classList.remove('hidden');
                 const imgUrl = `/persona-image/${pid}?t=${Date.now()}`; 
-                els.scanMain.src = imgUrl;
-                els.scanBlur.src = imgUrl;
-
-                // Show Manual Fields
+                els.scanMain.src = imgUrl; els.scanBlur.src = imgUrl;
                 els.manualFields.classList.remove('hidden');
-                
                 const s = p.subject || {};
                 const h = (s.hair && typeof s.hair === 'object') ? s.hair : { color: "", style: (typeof s.hair === 'string' ? s.hair : "") };
-                
-                els.pAge.value = s.age || ""; 
-                els.pEthnicity.value = s.ethnicity || ""; 
-                els.pBody.value = s.body_type || "";
-                els.pFace.value = s.face_structure || ""; 
-                els.pSkin.value = s.skin || ""; 
-                els.pEyes.value = s.eyes || "";
-                els.pNose.value = s.nose || ""; 
-                els.pLips.value = s.lips || ""; 
-                els.pTattoos.value = s.tattoos || "";
+                els.pAge.value = s.age || ""; els.pEthnicity.value = s.ethnicity || ""; els.pBody.value = s.body_type || "";
+                els.pFace.value = s.face_structure || ""; els.pSkin.value = s.skin || ""; els.pEyes.value = s.eyes || "";
+                els.pNose.value = s.nose || ""; els.pLips.value = s.lips || ""; els.pTattoos.value = s.tattoos || "";
                 els.pMakeup.value = s.makeup || "";
-                els.pHairColor.value = h.color || ""; 
-                els.pHairStyle.value = h.style || "";
+                els.pHairColor.value = h.color || ""; els.pHairStyle.value = h.style || "";
             }
         }
         
-        // --- UPDATED ANALYZE ACTION ---
-        els.actionBtn.onclick = async () => {
-            if (currentMode === 'json') {
-                // Validation
-                if (inputMode === 'image' && !store.file && !store.url) return showNotification('⚠️ Upload an image or enter URL', 'warning');
-                if (inputMode === 'text' && !els.textPromptInput.value.trim()) return showNotification('⚠️ Enter a prompt to parse', 'warning');
-
-                showLoading(inputMode === 'image' ? "ANALYZING" : "PARSING", "Processing...");
-                
-                const fd = new FormData();
-                // Add Image Data
-                if (inputMode === 'image') {
-                    if (store.file) fd.append('file', store.file);
-                    if (store.url) fd.append('image_url', store.url);
-                } 
-                // Add Text Data
-                else {
-                    fd.append('text_prompt', els.textPromptInput.value.trim());
-                }
-
-                // Add Common Settings
-                fd.append('model', els.visionModel.value);
-                fd.append('persona_id', els.persona.value);
-                fd.append('time_override', els.time.value);
-                fd.append('ratio_override', els.ratio.value);
-                fd.append('style_override', els.style.value);
-                fd.append('quality_override', els.quality.value);
-                fd.append('hair_style_override', els.hairStyle.value);
-                fd.append('hair_color_override', els.hairColor.value);
-                fd.append('makeup_override', els.makeup.value);
-                fd.append('glasses_override', els.glasses.value);
-                fd.append('expr_override', els.expr.value);
-                
-                try {
-                    const res = await fetch('/analyze', { method: 'POST', body: fd });
-                    const data = await res.json();
-                    if (data.error) throw new Error(data.error);
-                    
-                    if (els.refMode.checked && inputMode === 'image') data["reference_image_instruction"] = "Keep the same person from the reference image.";
-                    
-                    store.json = data;
-                    jar.updateCode(JSON.stringify(data, null, 2));
-                    updateHistoryUI();
-                    showNotification(inputMode === 'image' ? '✨ Analysis Complete' : '✨ Prompt Parsed & Adapted', 'success');
-                } catch(e) { 
-                    showNotification('❌ Failed: ' + e.message, 'error'); 
-                } finally { 
-                    hideLoading(); 
-                }
-            } 
-            else if (currentMode === 'prompt') {
-                if (!store.json) return showNotification('⚠️ Generate JSON first', 'warning');
-                showLoading("WRITING", "Writer Model: " + els.writerModel.value);
-                try {
-                    const res = await fetch('/generate-prompt', {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ json: store.json, model: els.writerModel.value })
-                    });
-                    const data = await res.json();
-                    let output = `POSITIVE PROMPT:\n${data.prompt}\n\n`;
-                    if (store.json.reference_image_instruction) output = `// REFERENCE:\n${store.json.reference_image_instruction}\n\n` + output;
-                    if (store.json.negative_prompt) output += `---\n\nNEGATIVE PROMPT:\n${store.json.negative_prompt.join(', ')}`;
-                    store.prompt = output;
-                    document.getElementById('editor').textContent = output;
-                    showNotification('✨ Prompt Generated', 'success');
-                } catch(e) { showNotification('❌ Failed: ' + e.message, 'error'); } finally { hideLoading(); }
-            }
-            else if (currentMode === 'tags') {
-                if (!store.file && !store.url) return showNotification('⚠️ Upload an image', 'warning');
-                showLoading("TAGGING", "Tagger Model: " + els.taggerModel.value);
-                const fd = new FormData();
-                if(store.file) fd.append('file', store.file);
-                if(store.url) fd.append('image_url', store.url);
-                fd.append('model', els.taggerModel.value);
-                fd.append('persona_id', els.persona.value);
-                fd.append('reference_mode', els.refMode.checked);
-                try {
-                    const res = await fetch('/generate-tags', { method: 'POST', body: fd });
-                    const data = await res.json();
-                    const output = `POSITIVE TAGS:\n${data.positive_tags}\n\n---\n\nNEGATIVE:\n${data.negative_prompt}`;
-                    store.tags = output;
-                    document.getElementById('editor').textContent = output;
-                    showNotification('✨ Tags Generated', 'success');
-                } catch(e) { showNotification('❌ Failed: ' + e.message, 'error'); } finally { hideLoading(); }
-            }
-        };
-
-        // --- CLOUD LOGIC ---
-        // Load Keys
-        els.keyGoogle.value = localStorage.getItem('google_key') || "";
-        els.keyFal.value = localStorage.getItem('fal_key') || "";
-        els.keyXai.value = localStorage.getItem('xai_key') || "";
-
-        // Settings Handlers
-        els.settingsBtn.onclick = () => els.settingsModal.classList.remove('hidden');
-        els.closeSettings.onclick = () => els.settingsModal.classList.add('hidden');
-        els.closeImgModal.onclick = () => els.imgModal.classList.add('hidden');
-
-        els.saveKeysBtn.onclick = () => {
-            localStorage.setItem('google_key', els.keyGoogle.value);
-            localStorage.setItem('fal_key', els.keyFal.value);
-            localStorage.setItem('xai_key', els.keyXai.value);
-            els.settingsModal.classList.add('hidden');
-            showNotification("🔑 Keys Saved", "success");
-        };
-
-        els.genCloudBtn.onclick = async () => {
-            // 1. Get Prompt
-            let prompt = "";
-            let negative = "";
-            
-            if (currentMode === 'prompt' && store.prompt) {
-                const parts = store.prompt.split('NEGATIVE PROMPT:');
-                prompt = parts[0].replace('POSITIVE PROMPT:', '').replace('// REFERENCE:', '').trim();
-                if(parts[1]) negative = parts[1].trim();
-            } else if (currentMode === 'tags' && store.tags) {
-                 const parts = store.tags.split('NEGATIVE:');
-                 prompt = parts[0].replace('POSITIVE TAGS:', '').trim();
-                 if(parts[1]) negative = parts[1].trim();
-            } else {
-                return showNotification("⚠️ Generate a Prompt or Tags first!", "warning");
-            }
-
-            // 2. Prepare UI
-            const provider = els.cloudModel.value;
-            const gKey = localStorage.getItem('google_key');
-            const fKey = localStorage.getItem('fal_key');
-            const xKey = localStorage.getItem('xai_key');
-
-            if (provider === 'nanobana' && !gKey) return showNotification("⚠️ Google Key missing (Settings)", "error");
-            if (provider === 'grok' && !xKey) return showNotification("⚠️ xAI Key missing (Settings)", "error");
-            if ((provider === 'flux' || provider === 'illustrious') && !fKey) return showNotification("⚠️ Fal.ai Key missing (Settings)", "error");
-
-            let activeKey = "";
-            if (provider === 'nanobana') activeKey = gKey;
-            else if (provider === 'grok') activeKey = xKey;
-            else activeKey = fKey;
-
-            els.imgModal.classList.remove('hidden');
-            els.cloudLoader.classList.remove('hidden');
-            els.cloudResult.classList.add('hidden');
-            els.cloudError.classList.add('hidden');
-
-            // 3. Call Backend
-            try {
-                const res = await fetch('/generate-image-cloud', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        prompt: prompt,
-                        negative_prompt: negative,
-                        width: provider === 'grok' ? 1024 : 832, 
-                        height: provider === 'grok' ? 1024 : 1216,
-                        model_provider: provider,
-                        api_key: activeKey
-                    })
-                });
-                
-                const data = await res.json();
-                
-                if(data.status === 'success') {
-                    els.cloudResult.src = "data:image/png;base64," + data.image;
-                    els.cloudResult.classList.remove('hidden');
-                } else {
-                    throw new Error(data.message);
-                }
-            } catch(e) {
-                els.cloudError.innerText = e.message;
-                els.cloudError.classList.remove('hidden');
-            } finally {
-                els.cloudLoader.classList.add('hidden');
-            }
-        };
-
-        // --- GLOBAL EXPORTS ---
-        window.editPersona = (pid) => { els.managerModal.classList.add('hidden'); openModal('edit', pid); };
-        window.deletePersona = async (pid) => { if(confirm("Delete?")) { await fetch(`/personas/${pid}`, { method: 'DELETE' }); await loadPersonas(); }};
-        window.loadH = (i) => { store.json = window.histData[i].json; switchTab('json'); };
-
-        // --- EVENT LISTENERS ---
-        els.drop.addEventListener('dragover', (e) => { e.preventDefault(); els.drop.classList.add('drop-zone-active'); });
-        els.drop.addEventListener('dragleave', () => els.drop.classList.remove('drop-zone-active'));
-        els.drop.addEventListener('drop', (e) => { e.preventDefault(); els.drop.classList.remove('drop-zone-active'); if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
-
-        els.downloadBtn.addEventListener('click', () => {
-            let content = "";
-            let ext = "txt";
-            if (currentMode === 'json') { content = jar.toString() || (store.json ? JSON.stringify(store.json, null, 2) : ""); ext = "json"; } 
-            else if (currentMode === 'prompt') content = store.prompt || document.getElementById('editor').innerText;
-            else content = store.tags || document.getElementById('editor').innerText;
-            if (!content || content.startsWith("//")) return showNotification("⚠️ Nothing to download", "warning");
-            const blob = new Blob([content], { type: "text/plain" });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url; a.download = `prompt-${Date.now()}.${ext}`; a.click();
-            URL.revokeObjectURL(url);
-        });
-
-        document.getElementById('copy-btn').addEventListener('click', () => {
-            let text = "";
-            
-            // FIX: Grab visible text from the editor first to capture manual edits
-            const editorContent = document.getElementById('editor').innerText;
-
-            if (currentMode === 'json') {
-                // For JSON mode, prioritize the code jar (formatted) content
-                text = jar.toString() || editorContent;
-            } else {
-                // For Prompt/Tags mode, trust the visible editor text
-                text = editorContent;
-            }
-
-            // Validation: Check if empty or just default placeholder text
-            if (!text || text.trim().startsWith("// Ready") || text.trim().startsWith("// Select")) {
-                return showNotification("⚠️ Nothing to copy", "warning");
-            }
-
-            navigator.clipboard.writeText(text);
-            
-            // Visual Success Feedback
-            const btn = document.getElementById('copy-btn');
-            const orig = btn.innerHTML;
-            btn.innerHTML = '<i class="fas fa-check"></i> COPIED';
-            btn.classList.add('text-green-400', 'border-green-400');
-            setTimeout(() => { 
-                btn.innerHTML = orig; 
-                btn.classList.remove('text-green-400', 'border-green-400'); 
-            }, 1500);
-        });
-
-        els.tabJson.onclick = () => switchTab('json');
-        els.tabPrompt.onclick = () => switchTab('prompt');
-        els.tabTags.onclick = () => switchTab('tags');
-
-        els.file.onchange = (e) => handleFile(e.target.files[0]);
-        els.drop.onclick = () => els.file.click();
-        els.clearImg.onclick = (e) => { e.stopPropagation(); store.file = null; store.url = null; els.urlInput.value = ""; els.preview.classList.add('hidden'); els.empty.classList.remove('hidden'); };
-
-        els.urlBtn.onclick = () => {
-            const url = els.urlInput.value.trim();
-            if(!url) return;
-            store.url = url; store.file = null;
-            els.thumbBlur.src = url; els.thumbMain.src = url;
-            els.preview.classList.remove('hidden'); els.empty.classList.add('hidden');
-        };
-        els.urlInput.addEventListener('keypress', (e) => { if(e.key === 'Enter') els.urlBtn.click(); });
-
-        els.refineBtn.onclick = async () => {
-            const txt = els.refineInput.value.trim();
-            if(!txt || currentMode !== 'json' || !store.json) return;
-            showLoading("REFINING", "Applying changes...");
-            try {
-                const res = await fetch('/refine', {
-                    method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ current_json: store.json, instruction: txt, model: els.writerModel.value })
-                });
-                const data = await res.json();
-                if(data.status === 'success') {
-                    store.json = data.json;
-                    jar.updateCode(JSON.stringify(data.json, null, 2));
-                    els.refineInput.value = '';
-                    showNotification('✨ Refined Successfully', 'success');
-                }
-            } catch(e) { showNotification('❌ Refine Failed', 'error'); } finally { hideLoading(); }
-        };
-
-        els.actionBtn.onclick = async () => {
-            if (currentMode === 'json') {
-                // Validation
-                if (inputMode === 'image' && !store.file && !store.url) return showNotification('⚠️ Upload an image or enter URL', 'warning');
-                if (inputMode === 'text' && !els.textPromptInput.value.trim()) return showNotification('⚠️ Enter a prompt to parse', 'warning');
-
-                showLoading(inputMode === 'image' ? "ANALYZING" : "PARSING", "Processing...");
-                
-                const fd = new FormData();
-                if (inputMode === 'image') {
-                    if (store.file) fd.append('file', store.file);
-                    if (store.url) fd.append('image_url', store.url);
-                } else {
-                    fd.append('text_prompt', els.textPromptInput.value.trim());
-                }
-
-                fd.append('model', els.visionModel.value);
-                fd.append('persona_id', els.persona.value);
-                fd.append('time_override', els.time.value);
-                fd.append('ratio_override', els.ratio.value);
-                fd.append('style_override', els.style.value);
-                fd.append('quality_override', els.quality.value);
-                fd.append('hair_style_override', els.hairStyle.value);
-                fd.append('hair_color_override', els.hairColor.value);
-                fd.append('makeup_override', els.makeup.value);
-                fd.append('glasses_override', els.glasses.value);
-                fd.append('expr_override', els.expr.value);
-                
-                try {
-                    const res = await fetch('/analyze', { method: 'POST', body: fd });
-                    const data = await res.json();
-                    if (data.error) throw new Error(data.error);
-                    
-                    // --- FIX: Removed "&& inputMode === 'image'" so it works for Text Mode too ---
-                    if (els.refMode.checked) {
-                        data["reference_image_instruction"] = "Keep the same person from the reference image.";
-                    }
-                    
-                    store.json = data;
-                    jar.updateCode(JSON.stringify(data, null, 2));
-                    updateHistoryUI();
-                    showNotification(inputMode === 'image' ? '✨ Analysis Complete' : '✨ Prompt Parsed & Adapted', 'success');
-                } catch(e) { showNotification('❌ Analysis Failed: ' + e.message, 'error'); } finally { hideLoading(); }
-            } 
-            // ... rest of the logic for prompt/tags remains the same
-            else if (currentMode === 'prompt') {
-                if (!store.json) return showNotification('⚠️ Generate JSON first', 'warning');
-                showLoading("WRITING", "Writer Model: " + els.writerModel.value);
-                try {
-                    const res = await fetch('/generate-prompt', {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ json: store.json, model: els.writerModel.value })
-                    });
-                    const data = await res.json();
-                    let output = `POSITIVE PROMPT:\n${data.prompt}\n\n`;
-                    if (store.json.reference_image_instruction) output = `// REFERENCE:\n${store.json.reference_image_instruction}\n\n` + output;
-                    if (store.json.negative_prompt) output += `---\n\nNEGATIVE PROMPT:\n${store.json.negative_prompt.join(', ')}`;
-                    store.prompt = output;
-                    document.getElementById('editor').textContent = output;
-                    showNotification('✨ Prompt Generated', 'success');
-                } catch(e) { showNotification('❌ Failed: ' + e.message, 'error'); } finally { hideLoading(); }
-            }
-            else if (currentMode === 'tags') {
-                // ... (Tags logic stays the same) ...
-                if (!store.file && !store.url) return showNotification('⚠️ Upload an image', 'warning');
-                showLoading("TAGGING", "Tagger Model: " + els.taggerModel.value);
-                const fd = new FormData();
-                if(store.file) fd.append('file', store.file);
-                if(store.url) fd.append('image_url', store.url);
-                fd.append('model', els.taggerModel.value);
-                fd.append('persona_id', els.persona.value);
-                fd.append('reference_mode', els.refMode.checked);
-                try {
-                    const res = await fetch('/generate-tags', { method: 'POST', body: fd });
-                    const data = await res.json();
-                    const output = `POSITIVE TAGS:\n${data.positive_tags}\n\n---\n\nNEGATIVE:\n${data.negative_prompt}`;
-                    store.tags = output;
-                    document.getElementById('editor').textContent = output;
-                    showNotification('✨ Tags Generated', 'success');
-                } catch(e) { showNotification('❌ Failed: ' + e.message, 'error'); } finally { hideLoading(); }
-            }
-        };
-
-        els.scanInput.onchange = (e) => {
-            if(e.target.files[0]) {
-                scanFile = e.target.files[0];
-                const r = new FileReader();
-                r.onload = (ev) => {
-                    els.scanBlur.src = ev.target.result;
-                    els.scanMain.src = ev.target.result;
-                    els.scanPreviewCont.classList.remove('hidden');
-                    els.scanMsg.classList.add('hidden');
-                };
-                r.readAsDataURL(scanFile);
-            }
-        };
-
         els.scanBtn.onclick = async () => {
             if(!els.pName.value || !scanFile) { return showNotification('⚠️ Name and photo required!', 'warning'); }
-            els.scanBtn.disabled = true; els.scanBtn.innerText = "SCANNING...";
-            els.scanMsg.classList.remove('hidden');
+            els.scanBtn.disabled = true; els.scanBtn.innerText = "SCANNING..."; els.scanMsg.classList.remove('hidden');
             const fd = new FormData();
-            fd.append('name', els.pName.value);
-            fd.append('file', scanFile);
-            fd.append('model', els.visionModel.value);
+            fd.append('name', els.pName.value); fd.append('file', scanFile); fd.append('model', els.visionModel.value);
             if(els.editPid.value) { fd.append('mode', 'edit'); fd.append('pid', els.editPid.value); }
-            
             try {
                 const res = await fetch('/personas/create', { method: 'POST', body: fd });
                 if(res.ok) {
-                    const data = await res.json();
-                    await loadPersonas();
-                    els.manualFields.classList.remove('hidden');
+                    const data = await res.json(); await loadPersonas(); els.manualFields.classList.remove('hidden');
                     const s = data.data.subject;
                     els.pAge.value = s.age || ""; els.pEthnicity.value = s.ethnicity || ""; els.pBody.value = s.body_type || "";
                     els.pFace.value = s.face_structure || ""; els.pSkin.value = s.skin || ""; els.pEyes.value = s.eyes || "";
                     els.pNose.value = s.nose || ""; els.pLips.value = s.lips || ""; els.pTattoos.value = s.tattoos || "";
                     els.pMakeup.value = s.makeup || "";
                     if (s.hair) { els.pHairColor.value = s.hair.color || ""; els.pHairStyle.value = s.hair.style || ""; }
-                    els.scanBtn.innerText = "SCAN COMPLETE ✓";
-                    els.editPid.value = data.id;
+                    els.scanBtn.innerText = "SCAN COMPLETE ✓"; els.editPid.value = data.id;
                     showNotification(`✨ Persona "${els.pName.value}" scanned`, 'success');
                 }
             } catch(e) { showNotification(`❌ Error: ${e.message}`, 'error'); } 
@@ -1019,24 +690,140 @@
         };
 
         els.updateManualBtn.onclick = async () => {
-            const pid = els.editPid.value;
-            if(!pid) return;
+            const pid = els.editPid.value; if(!pid) return;
             const sub = {
                 age: els.pAge.value, ethnicity: els.pEthnicity.value, body_type: els.pBody.value,
                 face_structure: els.pFace.value, skin: els.pSkin.value, eyes: els.pEyes.value,
-                nose: els.pNose.value, lips: els.pLips.value, tattoos: els.pTattoos.value,
-                makeup: els.pMakeup.value, // Added
+                nose: els.pNose.value, lips: els.pLips.value, tattoos: els.pTattoos.value, makeup: els.pMakeup.value,
                 hair: { color: els.pHairColor.value, style: els.pHairStyle.value }
             };
-            await fetch(`/personas/${pid}`, {
-                method: 'PUT', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ name: els.pName.value, subject: sub })
-            });
-            await loadPersonas();
-            els.modal.classList.add('hidden');
-            showNotification(`✅ Persona "${els.pName.value}" updated`, 'success');
+            await fetch(`/personas/${pid}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ name: els.pName.value, subject: sub }) });
+            await loadPersonas(); els.modal.classList.add('hidden'); showNotification(`✅ Persona "${els.pName.value}" updated`, 'success');
         };
 
+        els.actionBtn.onclick = async () => {
+            if (currentMode === 'json') {
+                // 1. Validation
+                if (inputMode === 'image' && !store.file && !store.url) return showNotification('⚠️ Upload an image or enter URL', 'warning');
+                if (inputMode === 'text' && !els.textPromptInput.value.trim()) return showNotification('⚠️ Enter a prompt to parse', 'warning');
+
+                // 2. Visual Feedback
+                showLoading(inputMode === 'image' ? "ANALYZING" : "PARSING", "Processing...");
+                jar.updateCode("// Processing... please wait."); 
+                
+                const fd = new FormData();
+                
+                // 3. Construct Data
+                if (inputMode === 'image') {
+                    if (store.file) fd.append('file', store.file);
+                    if (store.url) fd.append('image_url', store.url);
+                    fd.append('text_prompt', ''); // Clear text
+                } else {
+                    fd.append('text_prompt', els.textPromptInput.value.trim());
+                    fd.append('image_url', ''); // Clear image
+                }
+
+                // 4. Settings & Persona
+                fd.append('model', els.visionModel.value);
+                fd.append('persona_id', els.persona.value); // This ensures the NEW persona is sent
+                fd.append('time_override', els.time.value);
+                fd.append('ratio_override', els.ratio.value);
+                fd.append('style_override', els.style.value);
+                fd.append('quality_override', els.quality.value);
+                fd.append('hair_style_override', els.hairStyle.value);
+                fd.append('hair_color_override', els.hairColor.value);
+                fd.append('makeup_override', els.makeup.value);
+                fd.append('glasses_override', els.glasses.value);
+                fd.append('expr_override', els.expr.value);
+                
+                try {
+                    const res = await fetch('/analyze', { method: 'POST', body: fd });
+                    const data = await res.json();
+                    
+                    if (data.error) throw new Error(data.error);
+                    
+                    // FIX 1: Reference Instruction works for ALL modes now
+                    if (els.refMode.checked) {
+                        data["reference_image_instruction"] = "Keep the same person from the reference image.";
+                    }
+                    
+                    // FIX 2: Clear stale prompts/tags so user doesn't see old data
+                    store.json = data;
+                    store.prompt = null;
+                    store.tags = null;
+                    
+                    // Update Editor
+                    jar.updateCode(JSON.stringify(data, null, 2));
+                    updateHistoryUI();
+                    
+                    // FIX 3: Force switch to JSON tab to show new results
+                    if (currentMode !== 'json') switchTab('json');
+                    
+                    showNotification(inputMode === 'image' ? '✨ Analysis Complete' : '✨ Prompt Parsed & Adapted', 'success');
+                    
+                } catch(e) { 
+                    jar.updateCode(`// ERROR: ${e.message}\n// Please try again.`);
+                    showNotification('❌ Failed: ' + e.message, 'error'); 
+                } finally { 
+                    hideLoading(); 
+                }
+            } 
+            
+            // ... (Keep existing PROMPT logic) ...
+            else if (currentMode === 'prompt') {
+                if (!store.json) return showNotification('⚠️ Generate JSON first', 'warning');
+                showLoading("WRITING", "Writer Model: " + els.writerModel.value);
+                try {
+                    const res = await fetch('/generate-prompt', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ json: store.json, model: els.writerModel.value })
+                    });
+                    const data = await res.json();
+                    let output = `POSITIVE PROMPT:\n${data.prompt}\n\n`;
+                    if (store.json.reference_image_instruction) output = `// REFERENCE:\n${store.json.reference_image_instruction}\n\n` + output;
+                    if (store.json.negative_prompt) output += `---\n\nNEGATIVE PROMPT:\n${store.json.negative_prompt.join(', ')}`;
+                    store.prompt = output;
+                    document.getElementById('editor').textContent = output;
+                    showNotification('✨ Prompt Generated', 'success');
+                } catch(e) { showNotification('❌ Failed: ' + e.message, 'error'); } finally { hideLoading(); }
+            }
+            // ... (Keep existing TAGS logic) ...
+            else if (currentMode === 'tags') {
+                if (!store.file && !store.url) return showNotification('⚠️ Upload an image', 'warning');
+                showLoading("TAGGING", "Tagger Model: " + els.taggerModel.value);
+                const fd = new FormData();
+                if(store.file) fd.append('file', store.file);
+                if(store.url) fd.append('image_url', store.url);
+                fd.append('model', els.taggerModel.value);
+                fd.append('persona_id', els.persona.value);
+                fd.append('reference_mode', els.refMode.checked);
+                try {
+                    const res = await fetch('/generate-tags', { method: 'POST', body: fd });
+                    const data = await res.json();
+                    const output = `POSITIVE TAGS:\n${data.positive_tags}\n\n---\n\nNEGATIVE:\n${data.negative_prompt}`;
+                    store.tags = output;
+                    document.getElementById('editor').textContent = output;
+                    showNotification('✨ Tags Generated', 'success');
+                } catch(e) { showNotification('❌ Failed: ' + e.message, 'error'); } finally { hideLoading(); }
+            }
+        };
+
+        els.refineBtn.onclick = async () => {
+            const txt = els.refineInput.value.trim(); if(!txt || currentMode !== 'json' || !store.json) return;
+            showLoading("REFINING", "Applying changes...");
+            try {
+                const res = await fetch('/refine', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ current_json: store.json, instruction: txt, model: els.writerModel.value }) });
+                const data = await res.json();
+                if(data.status === 'success') { store.json = data.json; jar.updateCode(JSON.stringify(data.json, null, 2)); els.refineInput.value = ''; showNotification('✨ Refined Successfully', 'success'); }
+            } catch(e) { showNotification('❌ Refine Failed', 'error'); } finally { hideLoading(); }
+        };
+
+        // --- GLOBAL EXPORTS ---
+        window.editPersona = (pid) => { els.managerModal.classList.add('hidden'); openModal('edit', pid); };
+        window.deletePersona = async (pid) => { if(confirm("Delete?")) { await fetch(`/personas/${pid}`, { method: 'DELETE' }); await loadPersonas(); }};
+        window.loadH = (i) => { store.json = window.histData[i].json; switchTab('json'); };
+
+        // --- INIT ---
         els.addBtn.onclick = () => openModal('create');
         els.closeModal.onclick = () => els.modal.classList.add('hidden');
         els.manageBtn.onclick = () => els.managerModal.classList.remove('hidden');
@@ -1044,38 +831,81 @@
         els.scanDrop.onclick = () => els.scanInput.click();
         els.clearHistory.onclick = async () => { await fetch('/history', {method:'DELETE'}); updateHistoryUI(); };
         document.getElementById('quit-btn').onclick = async () => { await fetch('/shutdown', {method:'POST'}); window.close(); };
-
-        // --- INIT ---
-        (async () => {
-            const res = await fetch('/models');
-            const data = await res.json();
-            const models = data.models || ["llava:v1.6", "llama3.2"];
-            const populate = (sel, def, key) => {
-                sel.innerHTML = models.map(m => `<option value="${m}">${m}</option>`).join('');
-                const saved = localStorage.getItem(key);
-                if (saved && models.includes(saved)) sel.value = saved;
-                else { const best = models.find(m => m.includes(def)); if (best) sel.value = best; }
-                sel.addEventListener('change', () => localStorage.setItem(key, sel.value));
-            };
-            populate(els.visionModel, "qwen3-vl", "mem_vision");
-            populate(els.writerModel, "llama3.2", "mem_writer");
-            populate(els.taggerModel, "qwen3-vl", "mem_tagger");
-            await loadPersonas();
-            updateHistoryUI();
-
-            // --- VERSION & UPDATE CHECK ---
+        
+        els.keyGoogle.value = localStorage.getItem('google_key') || ""; els.keyFal.value = localStorage.getItem('fal_key') || ""; els.keyXai.value = localStorage.getItem('xai_key') || "";
+        els.settingsBtn.onclick = () => els.settingsModal.classList.remove('hidden'); els.closeSettings.onclick = () => els.settingsModal.classList.add('hidden'); els.closeImgModal.onclick = () => els.imgModal.classList.add('hidden');
+        els.saveKeysBtn.onclick = () => { localStorage.setItem('google_key', els.keyGoogle.value); localStorage.setItem('fal_key', els.keyFal.value); localStorage.setItem('xai_key', els.keyXai.value); els.settingsModal.classList.add('hidden'); showNotification("🔑 Keys Saved", "success"); };
+        
+        els.genCloudBtn.onclick = async () => {
+            let prompt = "", negative = "";
+            if (currentMode === 'prompt' && store.prompt) { const p = store.prompt.split('NEGATIVE PROMPT:'); prompt = p[0].replace('POSITIVE PROMPT:', '').replace('// REFERENCE:', '').trim(); if(p[1]) negative = p[1].trim(); }
+            else if (currentMode === 'tags' && store.tags) { const p = store.tags.split('NEGATIVE:'); prompt = p[0].replace('POSITIVE TAGS:', '').trim(); if(p[1]) negative = p[1].trim(); }
+            else return showNotification("⚠️ Generate Prompt/Tags first", "warning");
+            
+            const provider = els.cloudModel.value, gKey = localStorage.getItem('google_key'), fKey = localStorage.getItem('fal_key'), xKey = localStorage.getItem('xai_key');
+            if (provider === 'nanobana' && !gKey) return showNotification("⚠️ Google Key missing", "error");
+            if (provider === 'grok' && !xKey) return showNotification("⚠️ xAI Key missing", "error");
+            if ((provider === 'flux' || provider === 'illustrious') && !fKey) return showNotification("⚠️ Fal.ai Key missing", "error");
+            let activeKey = (provider === 'nanobana') ? gKey : (provider === 'grok') ? xKey : fKey;
+            
+            els.imgModal.classList.remove('hidden'); els.cloudLoader.classList.remove('hidden'); els.cloudResult.classList.add('hidden'); els.cloudError.classList.add('hidden');
             try {
-                const vRes = await fetch('/version');
-                const vData = await vRes.json();
+                const res = await fetch('/generate-image-cloud', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ prompt, negative_prompt: negative, width: provider === 'grok'?1024:832, height: provider === 'grok'?1024:1216, model_provider: provider, api_key: activeKey }) });
+                const data = await res.json();
+                if(data.status === 'success') { els.cloudResult.src = "data:image/png;base64," + data.image; els.cloudResult.classList.remove('hidden'); } else throw new Error(data.message);
+            } catch(e) { els.cloudError.innerText = e.message; els.cloudError.classList.remove('hidden'); } finally { els.cloudLoader.classList.add('hidden'); }
+        };
+		
+		// --- AUTO-INJECT LISTENER (QUICK SWAP) ---
+        els.persona.addEventListener('change', async () => {
+            // Only run if we have active JSON data
+            if (!store.json || Object.keys(store.json).length === 0) return;
+            
+            showLoading("SWAPPING", "Injecting new persona...");
+            
+            try {
+                const res = await fetch('/inject-persona', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ 
+                        json: store.json, 
+                        persona_id: els.persona.value 
+                    })
+                });
                 
-                // 1. Update Window Title Dynamically
-                document.title = `AI Prompt Director v${vData.local}`;
+                const data = await res.json();
                 
-                // 2. Show Update Banner if needed
-                if (vData.update_available) {
-                    showUpdateBanner(vData.local, vData.remote);
+                if(data.status === 'success') {
+                    // Update global store
+                    store.json = data.json;
+                    
+                    // Update Editor View if currently on JSON tab
+                    if (currentMode === 'json') {
+                        jar.updateCode(JSON.stringify(data.json, null, 2));
+                    }
+                    
+                    showNotification(`✨ Switched to ${els.persona.options[els.persona.selectedIndex].text}`, "success");
+                    
+                    // OPTIONAL: If we are on the Prompt tab, automatically regenerate the prompt
+                    if (currentMode === 'prompt') {
+                        els.actionBtn.click(); // This triggers the writer logic again with new JSON
+                    }
+                } else {
+                    throw new Error(data.message);
                 }
-            } catch(e) { console.log("Offline or version check failed"); }
+            } catch(e) {
+                showNotification("❌ Swap Failed: " + e.message, "error");
+            } finally {
+                hideLoading();
+            }
+        });
+
+        (async () => {
+            const res = await fetch('/models'); const data = await res.json(); const models = data.models || ["llava:v1.6", "llama3.2"];
+            const populate = (sel, def, key) => { sel.innerHTML = models.map(m => `<option value="${m}">${m}</option>`).join(''); const saved = localStorage.getItem(key); if (saved && models.includes(saved)) sel.value = saved; else { const best = models.find(m => m.includes(def)); if (best) sel.value = best; } sel.addEventListener('change', () => localStorage.setItem(key, sel.value)); };
+            populate(els.visionModel, "qwen3-vl", "mem_vision"); populate(els.writerModel, "llama3.2", "mem_writer"); populate(els.taggerModel, "qwen3-vl", "mem_tagger");
+            await loadPersonas(); updateHistoryUI();
+            try { const vRes = await fetch('/version'); const vData = await vRes.json(); document.title = `AI Prompt Director v${vData.local}`; } catch(e) {}
         })();
     </script>
 </body>

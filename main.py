@@ -7,6 +7,9 @@ import re
 import requests
 import signal
 import base64
+import subprocess
+import zipfile
+import io
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any, List
@@ -16,16 +19,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, StreamingResponse
 import ollama
 import uvicorn
-
-try:
-    from enhanced_tag_system import generate_tags_enhanced 
-    from prompt_generator import generate_narrative_prompt
-except ImportError:
-    logging.warning("⚠️ Enhanced modules not found. Using fallbacks.")
-    generate_tags_enhanced = None
-    generate_narrative_prompt = None
 
 # --- CONFIGURATION ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -60,15 +56,13 @@ templates = Jinja2Templates(directory=BASE_DIR)
 app.mount("/static", StaticFiles(directory=BASE_DIR), name="static")
 
 # Constants
-MAX_HISTORY_ITEMS = 50
 DEFAULT_MODELS = ["minicpm-v", "llava:v1.6", "qwen3-vl", "llama3.2"]
+GITHUB_VERSION_URL = "https://raw.githubusercontent.com/SirjohnQC/AI-Prompt-Director/main/version.txt"
 
-# --- CLOUD CONFIGURATION ---
+# API Keys
 GOOGLE_KEY = os.getenv("GOOGLE_API_KEY")
 FAL_KEY = os.getenv("FAL_KEY")
 XAI_KEY = os.getenv("XAI_API_KEY")
-# UPDATE THIS TO YOUR REPO:
-GITHUB_VERSION_URL = "https://raw.githubusercontent.com/SirjohnQC/AI-Prompt-Director/main/version.txt"
 
 class CloudGenRequest(BaseModel):
     prompt: str
@@ -113,28 +107,27 @@ def extract_json_from_text(text: str) -> Dict[str, Any]:
             return json.loads(json_str)
         except json.JSONDecodeError:
             pass 
+        # Loose cleanup for common LLM JSON errors
         json_str = re.sub(r'(?<=[}\]"0-9e])\s+(?=")', ', ', json_str)
         json_str = re.sub(r'(?<=true)\s+(?=")', ', ', json_str)
         json_str = re.sub(r'(?<=false)\s+(?=")', ', ', json_str)
         json_str = re.sub(r'(?<=null)\s+(?=")', ', ', json_str)
         json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
-        json_str = json_str.replace('True', 'true').replace('False', 'false').replace('None', 'null')
         return json.loads(json_str)
     except Exception as e:
         logger.error(f"JSON extraction failed: {e}")
-        return {"error": str(e), "subject": {"note": "JSON Repair Failed"}, "outfit": {}, "pose": {}, "environment": {}, "style_and_realism": {}}
+        return {}
 
 def save_history(entry):
     history = load_json_file(HISTORY_FILE, [])
     if not isinstance(history, list): history = []
     history.insert(0, entry)
-    save_json_file(HISTORY_FILE, history[:MAX_HISTORY_ITEMS])
+    save_json_file(HISTORY_FILE, history[:50])
 
 def process_uploaded_image(file: Optional[UploadFile] = None, image_url: Optional[str] = None) -> Path:
     if not file and not image_url: raise HTTPException(status_code=400, detail="No image provided.")
     try:
         if image_url:
-            if not image_url.startswith(("http", "https")): raise HTTPException(status_code=400, detail="Invalid URL.")
             response = requests.get(image_url, stream=True, timeout=15)
             response.raise_for_status()
             filename = f"url_img_{int(time.time())}.jpg"
@@ -149,6 +142,107 @@ def process_uploaded_image(file: Optional[UploadFile] = None, image_url: Optiona
         logger.error(f"Image processing failed: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
+# --- NEW: ROBUST TWO-PASS ANALYSIS ---
+async def enhanced_qwen_analysis(temp_path: Path, model: str) -> dict:
+    """Two-pass analysis with Safety Fallback"""
+    
+    # SYSTEM PROMPT 1: The "Dream" (Complex & Detailed)
+    complex_prompt = """Analyze this image in EXTREME detail.
+    Return valid JSON with this structure:
+    {
+      "subject": { "description": "...", "physique": "...", "face": { "expression": "...", "makeup": "...", "eyes": "..." }, "hair": { "color": "...", "style": "..." } },
+      "clothing": { "top": "...", "bottom": "...", "shoes": "...", "accessories": "...", "fabric_details": "..." },
+      "environment": { "location": "...", "background_details": ["..."], "lighting": { "source": "...", "quality": "..." } },
+      "camera": { "type": "...", "angle": "..." },
+      "style": { "aesthetic": "...", "vibe": "..." },
+      "meta_tokens": ["tag1", "tag2"]
+    }
+    """
+
+    # SYSTEM PROMPT 2: The "Safety Net" (Simple & Reliable)
+    simple_prompt = """Describe this image in JSON format.
+    Keys: subject, clothing, environment, style.
+    Keep it simple and direct."""
+
+    logger.info(f"Pass 1: Trying Complex Analysis with {model}...")
+    
+    try:
+        # Attempt 1: Complex
+        response1 = ollama.chat(
+            model=model,
+            messages=[{'role': 'user', 'content': complex_prompt, 'images': [str(temp_path)]}],
+            options={"temperature": 0.1, "num_predict": 3072}
+        )
+        data = extract_json_from_text(response1['message']['content'])
+    except Exception as e:
+        logger.error(f"Pass 1 Error: {e}")
+        data = {}
+
+    # FALLBACK: If Complex failed (empty data), run Simple
+    if not data or not data.get("subject"):
+        logger.warning("⚠️ Complex analysis failed/empty. Switching to Simple Mode.")
+        try:
+            response_fallback = ollama.chat(
+                model=model,
+                messages=[{'role': 'user', 'content': simple_prompt, 'images': [str(temp_path)]}],
+                options={"temperature": 0.2, "num_predict": 1024}
+            )
+            data = extract_json_from_text(response_fallback['message']['content'])
+        except Exception as e:
+            logger.error(f"Fallback failed: {e}")
+            data = {}
+
+    # Ensure basics exist so Pass 2 doesn't crash
+    data.setdefault("subject", {})
+    data.setdefault("clothing", {})
+    data.setdefault("environment", {})
+
+    # PASS 2: Detail Enhancement (Only run if we have a valid subject)
+    if data.get("subject"):
+        detail_prompt = """Provide fine details for:
+        1. Fabric textures (silk, denim)
+        2. Small accessories (rings, buttons)
+        3. Lighting nuances (rim light, shadows)
+        4. Makeup details
+        
+        Return JSON: { "fabric_details": [...], "small_accessories": [...], "lighting_nuances": [...], "makeup_techniques": [...] }"""
+
+        logger.info(f"Pass 2: Detail enhancement")
+        try:
+            response2 = ollama.chat(
+                model=model,
+                messages=[{'role': 'user', 'content': detail_prompt, 'images': [str(temp_path)]}],
+                options={"temperature": 0.1, "num_predict": 1024}
+            )
+            details = extract_json_from_text(response2['message']['content'])
+            
+            # Safe Merging
+            if details.get("fabric_details"):
+                if "fabric_details" not in data["clothing"]: data["clothing"]["fabric_details"] = []
+                # Handle cases where AI returns string instead of list
+                if isinstance(details["fabric_details"], list):
+                    if isinstance(data["clothing"]["fabric_details"], list):
+                         data["clothing"]["fabric_details"].extend(details["fabric_details"])
+                elif isinstance(details["fabric_details"], str):
+                    data["clothing"]["fabric_details"] = details["fabric_details"]
+
+            if details.get("small_accessories"):
+                current = str(data["clothing"].get("accessories", ""))
+                new_items = details["small_accessories"]
+                if isinstance(new_items, list): new_items = ", ".join(new_items)
+                data["clothing"]["accessories"] = f"{current}, {new_items}".strip(", ")
+
+            if details.get("lighting_nuances"):
+                if isinstance(data["environment"].get("lighting"), dict):
+                    data["environment"]["lighting"]["nuances"] = details["lighting_nuances"]
+
+        except Exception as e:
+            logger.error(f"Pass 2 Error: {e}")
+            # Do not fail the whole request if Pass 2 fails
+            pass
+    
+    return data
+
 # --- ENDPOINTS ---
 
 @app.get("/", response_class=HTMLResponse)
@@ -161,7 +255,6 @@ async def read_root(request: Request):
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
-# --- VERSION CHECK ---
 @app.get("/version")
 async def check_version():
     try:
@@ -183,7 +276,6 @@ async def trigger_update():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-# --- CLOUD IMAGE GENERATION ---
 @app.post("/generate-image-cloud")
 async def generate_image_cloud(req: CloudGenRequest):
     logger.info(f"Cloud Gen Request: {req.model_provider}")
@@ -244,7 +336,7 @@ async def generate_image_cloud(req: CloudGenRequest):
 
     return {"status": "error", "message": "Unknown provider"}
 
-# --- MODEL MANAGEMENT ---
+# --- MODEL MGMT ---
 @app.get("/models")
 async def get_models():
     try:
@@ -260,7 +352,7 @@ async def delete_model(model_name: str):
         return {"status": "deleted"}
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
-# --- ANALYZE ENDPOINT (FIXED GLASSES) ---
+# --- MAIN ANALYZE ENDPOINT ---
 @app.post("/analyze")
 async def analyze_image(
     file: Optional[UploadFile] = File(None),
@@ -288,142 +380,311 @@ async def analyze_image(
             filename = "text_import.json"
             parser_model = "llama3.2" 
             parser_system = """You are a Prompt Engineer. Convert text to JSON.
-            Map to: subject (age, hair, makeup), outfit, pose, environment, style_and_realism, colors_and_tone.
-            JSON FORMAT: { "subject": {...}, "outfit": {...}, "pose": {...}, "environment": {...}, "style_and_realism": {...}, "colors_and_tone": {...} }"""
-            response = ollama.chat(model=parser_model, messages=[{'role': 'system', 'content': parser_system}, {'role': 'user', 'content': text_prompt}], options={"temperature": 0.1}, format="json")
+            Map to: subject (face, hair), clothing, environment, camera, style, technical_quality, meta_tokens.
+            JSON FORMAT: { "subject": {...}, "clothing": {...}, "environment": {...}, "camera": {...}, "style": {...}, "technical_quality": {...}, "meta_tokens": [...] }"""
+            response = ollama.chat(
+                model=parser_model, 
+                messages=[
+                    {'role': 'system', 'content': parser_system}, 
+                    {'role': 'user', 'content': text_prompt}
+                ], 
+                options={"temperature": 0.1}, 
+                format="json"
+            )
             data = extract_json_from_text(response['message']['content'])
+            if data is None: 
+                data = {}
 
         # --- PATH B: IMAGE ANALYSIS ---
         else:
             temp_path = process_uploaded_image(file, image_url)
             filename = file.filename if file else "url_image.jpg"
-            system_prompt = """Analyze image in EXTREME DETAIL. Return JSON.
-            INSTRUCTIONS: Describe textures, lighting, body position, makeup, and colors.
-            JSON STRUCTURE:
-            {
-              "subject": { "name": "Unknown", "age": "...", "ethnicity": "...", "hair": {...}, "skin": "...", "makeup": "..." },
-              "outfit": { "top": "...", "bottom": "...", "accessories": "..." },
-              "pose": { "posture": "...", "expression": "...", "hands": "..." },
-              "environment": { "setting": "...", "lighting": "...", "atmosphere": "..." },
-              "camera": { "shot_type": "...", "angle": "...", "device": "..." },
-              "style_and_realism": { "visual_style": "...", "realism": "..." },
-              "colors_and_tone": { "dominant_palette": "...", "contrast": "...", "grading": "..." },
-              "quality_and_technical_details": { "resolution": "...", "sharpness": "...", "defects": "..." }
-            }"""
-            logger.info(f"Analyzing with {model}")
-            response = ollama.chat(model=model, messages=[{'role': 'user', 'content': system_prompt, 'images': [str(temp_path)]}], options={"temperature": 0.2, "num_predict": 2048})
-            data = extract_json_from_text(response['message']['content'])
+            data = await enhanced_qwen_analysis(temp_path, model)
 
-        # --- DATA CLEANUP ---
-        target_keys = ["subject", "outfit", "pose", "environment", "camera", "style_and_realism", "colors_and_tone", "quality_and_technical_details"]
-        for key in target_keys: 
-            if key not in data: data[key] = {}
-        if "makeup" not in data.get("subject", {}): 
-            if "subject" not in data: data["subject"] = {}
-            data["subject"]["makeup"] = ""
+        # --- CRITICAL: NORMALIZE DATA STRUCTURE FIRST ---
+        # Ensure all required keys exist before persona injection
+        if "subject" not in data or not isinstance(data["subject"], dict):
+            data["subject"] = {}
+        if "style" not in data or data["style"] is None: 
+            data["style"] = {}
+        if "face" not in data["subject"] or not isinstance(data["subject"].get("face"), dict):
+            data["subject"]["face"] = {}
+        if "hair" not in data["subject"]:
+            data["subject"]["hair"] = {}
+        if "clothing" not in data:
+            data["clothing"] = {}
+        if "environment" not in data:
+            data["environment"] = {}
+        if "meta_tokens" not in data:
+            data["meta_tokens"] = []
 
-        # --- PERSONA INJECTION ---
+        # --- PERSONA INJECTION (NOW WORKS FOR BOTH TEXT & IMAGE) ---
         if persona_id != "none":
             all_personas = load_json_file(PERSONA_FILE)
             if persona_id in all_personas:
                 persona = all_personas[persona_id]
-                p_subject = persona.get("subject", {})
-                data["subject"]["name"] = persona.get("name", "Character")
-                if p_subject.get("age"): data["subject"]["age"] = p_subject["age"]
-                if p_subject.get("ethnicity"): data["subject"]["ethnicity"] = p_subject["ethnicity"]
-                if p_subject.get("body_type"): data["subject"]["body_type"] = p_subject["body_type"]
-                for k in ["face_structure", "eyes", "nose", "lips", "skin", "makeup"]:
-                    if p_subject.get(k) and str(p_subject[k]).lower() not in ["none", "detected", ""]:
-                        data["subject"][k] = p_subject[k]
-                if p_subject.get("tattoos") and "none" not in str(p_subject["tattoos"]).lower(): 
-                    data["subject"]["tattoos"] = p_subject.get("tattoos")
-                if "hair" in p_subject: data["subject"]["hair"] = p_subject["hair"]
+                
+                if persona and isinstance(persona, dict):
+                    p_subject = persona.get("subject", {})
+                    
+                    # Inject name
+                    data["subject"]["name"] = persona.get("name", "Character")
+                    
+                    # Basic attributes
+                    if p_subject.get("age"): 
+                        data["subject"]["age"] = p_subject["age"]
+                    if p_subject.get("ethnicity"): 
+                        data["subject"]["ethnicity"] = p_subject["ethnicity"]
+                    if p_subject.get("body_type"): 
+                        data["subject"]["body_type"] = p_subject["body_type"]
+                        data["subject"]["physique"] = p_subject["body_type"]
 
-        # --- OVERRIDES ---
+                    # Hair injection (preserve condition if detected)
+                    if "hair" in p_subject:
+                        detected_condition = None
+                        if isinstance(data["subject"].get("hair"), dict):
+                            detected_condition = data["subject"]["hair"].get("condition")
+                        
+                        if isinstance(p_subject["hair"], dict):
+                            data["subject"]["hair"] = p_subject["hair"].copy()
+                            if detected_condition and "condition" not in data["subject"]["hair"]:
+                                data["subject"]["hair"]["condition"] = detected_condition
+                        else:
+                            # If persona hair is a string, convert to dict
+                            data["subject"]["hair"] = {
+                                "style": str(p_subject["hair"]), 
+                                "color": "Unknown",
+                                "condition": detected_condition or "healthy"
+                            }
+
+                    # Face attributes
+                    for k in ["face_structure", "eyes", "nose", "lips", "skin", "makeup"]:
+                        val = p_subject.get(k)
+                        if val and str(val).lower() not in ["none", "detected", ""]:
+                            data["subject"]["face"][k] = val
+                    
+                    # Tattoos
+                    if p_subject.get("tattoos"): 
+                        data["subject"]["tattoos"] = p_subject.get("tattoos")
+                    
+                    # Regenerate description
+                    p_desc_parts = [data["subject"]["name"]]
+                    if data["subject"].get("age"): 
+                        p_desc_parts.append(f"{data['subject']['age']} years old")
+                    if data["subject"].get("ethnicity"): 
+                        p_desc_parts.append(data['subject']['ethnicity'])
+                    if data["subject"].get("body_type"): 
+                        p_desc_parts.append(data['subject']['body_type'])
+                    p_desc_parts.append("woman")
+                    data["subject"]["description"] = ", ".join(p_desc_parts)
+                    
+                    # Meta tokens cleanup & injection
+                    banned_words = ["hair", "blonde", "blond", "brunette", "redhead", "ginger", "cut", "style"]
+                    data["meta_tokens"] = [
+                        t for t in data["meta_tokens"] 
+                        if not any(b in t.lower() for b in banned_words)
+                    ]
+                    
+                    # Insert persona-specific tokens
+                    p_hair = data["subject"].get("hair", {})
+                    if isinstance(p_hair, dict):
+                        if p_hair.get("style"): 
+                            data["meta_tokens"].insert(0, p_hair.get("style"))
+                        if p_hair.get("color"): 
+                            data["meta_tokens"].insert(0, f"{p_hair.get('color')} hair")
+                    
+                    if data["subject"]["name"] not in str(data["meta_tokens"]):
+                        data["meta_tokens"].insert(0, data["subject"]["name"])
+
+        # --- OVERRIDES (Applied after persona) ---
         if hair_style_override != "auto":
-            if "hair" not in data["subject"]: data["subject"]["hair"] = {}
-            data["subject"]["hair"]["style"] = hair_style_override
+            if isinstance(data["subject"]["hair"], dict):
+                data["subject"]["hair"]["style"] = hair_style_override
+                
         if hair_color_override != "auto":
-            if "hair" not in data["subject"]: data["subject"]["hair"] = {}
-            data["subject"]["hair"]["color"] = hair_color_override
-        if makeup_override != "auto": data["subject"]["makeup"] = makeup_override
+            if isinstance(data["subject"]["hair"], dict):
+                data["subject"]["hair"]["color"] = hair_color_override
+                
+        if makeup_override != "auto": 
+            data["subject"]["face"]["makeup"] = makeup_override
         
-        # --- FIXED GLASSES LOGIC (Smart Cleanup) ---
+        # Glasses logic (fixed)
         if glasses_override != "auto":
-            if "outfit" not in data: data["outfit"] = {}
-            if "subject" not in data: data["subject"] = {}
+            outfit_key = "clothing" if "clothing" in data else "outfit"
+            if outfit_key not in data: 
+                data[outfit_key] = {}
             
-            acc = data["outfit"].get("accessories", "")
-            eyes = data["subject"].get("eyes", "")
+            acc = data[outfit_key].get("accessories", "")
+            eyes = data["subject"]["face"].get("eyes", "")
 
-            # Regex to remove existing glasses mentions (e.g. "no glasses", "sunglasses", "round glasses")
-            # We remove them first to avoid "no glasses, wearing glasses" conflicts
             remove_pattern = r"(?i)(,\s*)?(no\s+)?(reading\s+|sun)?glasses(,\s*)?"
-            
-            clean_acc = re.sub(remove_pattern, "", acc).strip(", ")
-            clean_eyes = re.sub(remove_pattern, "", eyes).strip(", ")
+            clean_acc = re.sub(remove_pattern, "", str(acc)).strip(", ")
+            clean_eyes = re.sub(remove_pattern, "", str(eyes)).strip(", ")
 
             if glasses_override == "none":
-                # User specifically wants NO glasses
-                data["outfit"]["accessories"] = (clean_acc + ", no glasses").strip(", ")
-                data["subject"]["eyes"] = clean_eyes # Just remove glasses mention from eyes
+                data[outfit_key]["accessories"] = (clean_acc + ", no glasses").strip(", ")
+                data["subject"]["face"]["eyes"] = clean_eyes 
             else:
-                # User wants specific glasses
-                # Add to outfit
-                data["outfit"]["accessories"] = f"{clean_acc}, {glasses_override}".strip(", ")
-                # Add to eyes (crucial for prompt generation)
-                data["subject"]["eyes"] = f"{clean_eyes}, wearing {glasses_override}".strip(", ")
+                data[outfit_key]["accessories"] = f"{clean_acc}, {glasses_override}".strip(", ")
+                data["subject"]["face"]["eyes"] = f"{clean_eyes}, wearing {glasses_override}".strip(", ")
 
-        if time_override != "auto": data["environment"]["time_of_day"] = time_override
-        if expr_override != "auto": data["pose"]["expression"] = expr_override
-        if ratio_override != "auto": data["aspect_ratio_and_output"] = {"aspect_ratio": ratio_override}
-        if style_override != "auto": data["style_and_realism"]["visual_style"] = style_override
+        # Environment/Style overrides
+        if time_override != "auto": 
+            data["environment"]["time_indicator"] = time_override
+            
+        if expr_override != "auto": 
+            data["subject"]["face"]["expression"] = expr_override
+            
+        if ratio_override != "auto": 
+            data["aspect_ratio"] = ratio_override
+            
+        if style_override != "auto": 
+            data["style"]["aesthetic"] = style_override
 
-        if quality_override == "Best":
-            data["quality_and_technical_details"] = {"resolution": "8k uhd", "detail": "maximum", "sharpness": "high"}
-        elif quality_override == "Raw":
-            data["quality_and_technical_details"] = {"style": "raw photo", "noise": "slight film grain"}
-        elif quality_override == "Phone":
-            data["quality_and_technical_details"] = {"style": "smartphone photography", "lighting": "flash"}
+        # Quality presets
+        if quality_override != "auto":
+            if quality_override == "Best": 
+                data["meta_tokens"].extend(["8k", "best quality", "masterpiece"])
+            elif quality_override == "Raw": 
+                data["meta_tokens"].extend(["raw photo", "film grain", "analog style"])
+            elif quality_override == "Phone": 
+                data["meta_tokens"].extend(["iphone photo", "candid", "flash photography"])
 
-        data["negative_prompt"] = ["lowres", "bad anatomy", "bad hands", "text", "error", "missing fingers", "extra digit", "fewer digits", "cropped", "worst quality", "low quality", "normal quality", "jpeg artifacts", "signature", "watermark", "username", "blurry"]
+        # Negative prompt
+        data["negative_prompt"] = [
+            "lowres", "bad anatomy", "bad hands", "text", "error", 
+            "missing fingers", "extra digit", "fewer digits", "cropped", 
+            "worst quality", "low quality", "normal quality", "jpeg artifacts", 
+            "signature", "watermark", "username", "blurry"
+        ]
 
-        ordered = {}
-        for k in target_keys: 
-            if k in data: ordered[k] = data[k]
-        for k, v in data.items(): 
-            if k not in ordered and k not in ["negative_prompt", "reference_image_instruction"]: ordered[k] = v
-        
-        ordered["negative_prompt"] = data["negative_prompt"]
-        if "reference_image_instruction" in data:
-            ordered["reference_image_instruction"] = data["reference_image_instruction"]
+        # Final cleanup
+        if "clothing" in data and "outfit" in data: 
+            del data["outfit"]
+        elif "outfit" in data: 
+            data["clothing"] = data.pop("outfit")
+            
+        # Remove empty dictionaries
+        keys_to_remove = [k for k, v in data.items() if isinstance(v, dict) and not v]
+        for k in keys_to_remove: 
+            del data[k]
 
+        # Save to history
         save_history({
             "filename": filename,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "model": "text-parser" if text_prompt else model,
             "persona": persona_id,
-            "json": ordered
+            "json": data
         })
         
-        return ordered
+        return data
 
     except Exception as e:
         logger.error(f"Analysis error: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
     finally:
         safe_file_cleanup(temp_path)
+        
+# --- QUICK PERSONA SWAP ENDPOINT ---
+@app.post("/inject-persona")
+async def inject_persona_endpoint(request: Request):
+    """
+    Updates an existing JSON object with a new Persona's details
+    without re-analyzing the image.
+    """
+    try:
+        req_data = await request.json()
+        data = req_data.get("json", {})
+        persona_id = req_data.get("persona_id")
+        
+        if not data or not persona_id:
+            return {"status": "error", "message": "Missing JSON or Persona ID"}
+
+        # Normalize data if needed (safety check)
+        if "subject" not in data: data["subject"] = {}
+        if "meta_tokens" not in data: data["meta_tokens"] = []
+
+        if persona_id != "none":
+            all_personas = load_json_file(PERSONA_FILE)
+            if persona_id in all_personas:
+                persona = all_personas[persona_id]
+                if persona and isinstance(persona, dict):
+                    p_subject = persona.get("subject", {})
+                    
+                    # 1. Inject Identity
+                    data["subject"]["name"] = persona.get("name", "Character")
+                    
+                    # 2. Overwrite physical traits
+                    if p_subject.get("age"): data["subject"]["age"] = p_subject["age"]
+                    if p_subject.get("ethnicity"): data["subject"]["ethnicity"] = p_subject["ethnicity"]
+                    if p_subject.get("body_type"): 
+                        data["subject"]["body_type"] = p_subject["body_type"]
+                        data["subject"]["physique"] = p_subject["body_type"]
+
+                    # 3. Smart Hair Merge
+                    if "hair" in p_subject:
+                        if "hair" not in data["subject"]: data["subject"]["hair"] = {}
+                        
+                        if isinstance(p_subject["hair"], dict):
+                            # Keep detected condition if it exists
+                            current_cond = data["subject"]["hair"].get("condition")
+                            # Overwrite with persona details
+                            data["subject"]["hair"].update(p_subject["hair"])
+                            # Restore condition if persona didn't specify it
+                            if current_cond and "condition" not in p_subject["hair"]:
+                                data["subject"]["hair"]["condition"] = current_cond
+                        else:
+                            # Handle string format
+                            current_cond = data["subject"]["hair"].get("condition", "healthy")
+                            data["subject"]["hair"]["style"] = str(p_subject["hair"])
+                            data["subject"]["hair"]["condition"] = current_cond
+
+                    # 4. Face attributes
+                    if "face" not in data["subject"]: data["subject"]["face"] = {}
+                    for k in ["face_structure", "eyes", "nose", "lips", "skin", "makeup"]:
+                        val = p_subject.get(k)
+                        if val and str(val).lower() not in ["none", "detected", ""]:
+                            data["subject"]["face"][k] = val
+                    
+                    if p_subject.get("tattoos"): data["subject"]["tattoos"] = p_subject.get("tattoos")
+
+                    # 5. Regenerate Description
+                    p_desc_parts = [data["subject"]["name"]]
+                    if data["subject"].get("age"): p_desc_parts.append(f"{data['subject']['age']} years old")
+                    if data["subject"].get("ethnicity"): p_desc_parts.append(data['subject']['ethnicity'])
+                    if data["subject"].get("body_type"): p_desc_parts.append(data['subject']['body_type'])
+                    p_desc_parts.append("woman")
+                    data["subject"]["description"] = ", ".join(p_desc_parts)
+
+                    # 6. Meta Tokens Scrub & Inject
+                    # Remove conflicting tags
+                    banned_words = ["hair", "blonde", "blond", "brunette", "redhead", "ginger", "cut", "style"]
+                    data["meta_tokens"] = [t for t in data["meta_tokens"] if not any(b in t.lower() for b in banned_words)]
+                    
+                    # Inject new tags
+                    if data["subject"]["name"] not in str(data["meta_tokens"]):
+                        data["meta_tokens"].insert(0, data["subject"]["name"])
+                        
+                    p_hair = data["subject"].get("hair", {})
+                    if isinstance(p_hair, dict):
+                        if p_hair.get("style"): data["meta_tokens"].insert(1, p_hair.get("style"))
+                        if p_hair.get("color"): data["meta_tokens"].insert(1, f"{p_hair.get('color')} hair")
+
+        return {"status": "success", "json": data}
+
+    except Exception as e:
+        logger.error(f"Inject Persona Error: {e}")
+        return {"status": "error", "message": str(e)}
 
 @app.post("/generate-prompt")
 async def generate_natural_prompt(request: Request):
     try:
+        from prompt_generator import generate_narrative_prompt
         data = await request.json()
         json_context = data.get("json")
         user_model = data.get("model", "llama3.2")
-        if generate_narrative_prompt:
-            prompt_text = generate_narrative_prompt(json_context, preferred_model=user_model)
-        else:
-            return {"status": "error", "error": "Prompt Generator module missing"}
+        prompt_text = generate_narrative_prompt(json_context, preferred_model=user_model)
         return {"status": "success", "prompt": prompt_text}
     except Exception as e: return {"status": "error", "error": str(e)}
 
@@ -437,6 +698,11 @@ async def generate_tags(
 ):
     temp_path = None
     try:
+        try:
+            from enhanced_tag_system import generate_tags_enhanced 
+        except ImportError:
+            generate_tags_enhanced = None
+
         temp_path = process_uploaded_image(file, image_url)
         system_prompt = "Describe this image using a list of booru-style tags."
         response = ollama.chat(
@@ -476,7 +742,6 @@ async def refine_json(request: Request):
         return {"status": "success", "json": new_json}
     except Exception as e: return {"status": "error", "error": str(e)}
 
-# --- PERSONA MGMT ---
 @app.get("/personas")
 async def list_personas():
     data = load_json_file(PERSONA_FILE, {})
@@ -487,6 +752,7 @@ async def get_persona_image(pid: str):
     img_path = IMG_DIR / f"{pid}.jpg"
     return FileResponse(img_path) if img_path.exists() else JSONResponse(status_code=404, content={})
 
+# --- UPGRADED PERSONA CREATION (Dedicated Profile Scanner) ---
 @app.post("/personas/create")
 async def create_persona(
     name: str = Form(...),
@@ -498,20 +764,65 @@ async def create_persona(
     temp_path = None
     try:
         if not file: raise HTTPException(status_code=400, detail="File required")
+        
+        # Determine ID
         safe_id = pid if (mode == "edit" and pid) else re.sub(r'[^a-zA-Z0-9]', '_', name.lower())
+        
+        # Save image
         temp_path = TEMP_DIR / f"scan_{file.filename}"
         with open(temp_path, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
         shutil.copy(temp_path, IMG_DIR / f"{safe_id}.jpg")
         
-        scan_prompt = f"Analyze image for character profile. Name: {name}. Return JSON with age, ethnicity, body_type, face_structure, eyes, nose, lips, skin, tattoos, hair, makeup."
-        resp = ollama.chat(model=model, messages=[{'role': 'user', 'content': scan_prompt, 'images': [str(temp_path)]}])
-        ai_data = extract_json_from_text(resp['message']['content'])
+        # --- DEDICATED PERSONA PROMPT ---
+        # We use a specific prompt that maps 1:1 to your UI fields
+        system_prompt = f"""Analyze this character image for a database profile. 
+        Extract these SPECIFIC details. If unsure, estimate.
         
+        Return JSON with these EXACT keys:
+        {{
+            "age": "Estimated age (e.g. '25')",
+            "ethnicity": "Specific ethnicity",
+            "body_type": "Body build description (e.g. 'Slim', 'Curvy', 'Muscular')",
+            "face_structure": "Face shape (e.g. 'Oval', 'Square', 'Heart')",
+            "skin": "Skin tone and texture description",
+            "eyes": "Eye color and shape",
+            "nose": "Nose shape and size",
+            "lips": "Lip shape and color",
+            "hair": {{ "color": "Precise color", "style": "Hairstyle description" }},
+            "makeup": "Makeup details or 'None'",
+            "tattoos": "Visible tattoos or 'None'"
+        }}
+        """
+        
+        logger.info(f"Scanning Persona '{name}' with profile scanner...")
+        response = ollama.chat(
+            model=model, 
+            messages=[{'role': 'user', 'content': system_prompt, 'images': [str(temp_path)]}],
+            options={"temperature": 0.1}
+        )
+        
+        # Extract and Clean Data
+        ai_data = extract_json_from_text(response['message']['content'])
+        
+        # Robustness: Ensure 'hair' is an object
+        if "hair" in ai_data and isinstance(ai_data["hair"], str):
+             ai_data["hair"] = {"style": ai_data["hair"], "color": "Unknown"}
+        
+        # Save to DB
         all_p = load_json_file(PERSONA_FILE, {})
-        all_p[safe_id] = { "name": name, "subject": ai_data.get("subject", ai_data) } # Robust fallback
+        all_p[safe_id] = { 
+            "name": name, 
+            "subject": ai_data 
+        }
         save_json_file(PERSONA_FILE, all_p)
+        
         return {"status": "success", "id": safe_id, "data": all_p[safe_id]}
-    finally: safe_file_cleanup(temp_path)
+        
+    except Exception as e:
+        logger.error(f"Persona creation failed: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    finally:
+        safe_file_cleanup(temp_path)
 
 @app.put("/personas/{pid}")
 async def update_persona(pid: str, request: Request):

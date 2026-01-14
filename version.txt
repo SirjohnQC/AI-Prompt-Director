@@ -1,1 +1,7 @@
-1.4
+1.8
+
+added second pass for analyzing image
+added being able to re-scan persona face
+added brain second pass for more detailed persona
+added new scan for persona
+added persona swaping
