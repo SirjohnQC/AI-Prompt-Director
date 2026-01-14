@@ -1,0 +1,22 @@
+venv/
+__pycache__/
+*.pyc
+temp/
+persona_images/
+bck/
+example.json
+example.txt
+persona_images/
+personas.json
+history.json
+config.json
+.env
+
+# Dev Tools (Only for me)
+PUSH_TO_GITHUB.bat
+CONNECT_REPO.bat
+
+# User Tools (Keep these visible!)
+# DO NOT ADD: run.bat
+# DO NOT ADD: INSTALL.bat
+# DO NOT ADD: UPDATE.bat
