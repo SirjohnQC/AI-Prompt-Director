@@ -308,134 +308,84 @@ def validate_vision_model(model: str) -> tuple[bool, str]:
         return True, model
 
 
-# --- MEMORY OPTIMIZED AI CALLS ---
+# --- MEMORY OPTIMIZED AI CALLS (FIXED DESCRIPTION) ---
 async def enhanced_qwen_analysis(temp_path: Path, model: str) -> dict:
     """
-    Two-pass analysis - uses simplified prompts that force actual image observation.
+    Two-pass analysis with STRICT JSON structure.
+    Optimized to prevent Persona contradictions by keeping the 'description' neutral.
     """
     
-    # Validate that we have a working vision model
+    # Validate model
     is_valid, result = validate_vision_model(model)
     if not is_valid:
         logger.error(f"❌ Vision model validation failed: {result}")
         return {"error": result, "subject": {}, "pose": {}, "clothing": {}, "environment": {}, "style": {}}
     
-    # Use the validated model name (might be corrected)
     model = result
     logger.info(f"✓ Using vision model: {model}")
     
-    # PASS 1: Direct observation prompt - NO template, just questions
-    observation_prompt = """Analyze this image and return a JSON object describing what you see.
+    # PASS 1: STRUCTURED PROMPT (With Anti-Contradiction Rules)
+    complex_prompt = """Analyze this image. Return a JSON object with this EXACT structure.
+    
+    {
+      "subject": {
+        "description": "A 1-sentence summary of the subject's ACTION and CONTEXT only. Do NOT describe physical features (hair color, eye color, skin tone) here.",
+        "age": "Estimate (e.g. 25)",
+        "ethnicity": "Estimate",
+        "body_type": "Build (e.g. Athletic, Curvy)",
+        "face": {
+           "expression": "Visible emotion (e.g. Neutral, Smiling, Serious)",
+           "eyes": "Color and shape details",
+           "skin": "Texture and tone",
+           "hair": "Color, length, and style"
+        }
+      },
+      "pose": {
+        "type": "Stance (Standing, Sitting)",
+        "action": "What are they doing?",
+        "limbs": "Arm/leg positions"
+      },
+      "clothing": {
+        "outfit": "Detailed description of garments",
+        "fit": "Loose/Tight/Fitted",
+        "accessories": "Jewelry, bags, etc."
+      },
+      "environment": {
+        "location": "Setting description",
+        "lighting": "Light source and mood",
+        "background_elements": ["list", "of", "items"]
+      },
+      "style": {
+        "aesthetic": "Visual vibe (e.g. Cinematic, Candid)",
+        "camera": "Shot type (e.g. Close-up, Wide)"
+      },
+      "meta_tokens": ["keyword1", "keyword2", "keyword3"]
+    }
+    """
 
-Describe:
-1. The person: age, gender, ethnicity, hair color and style, eye color, skin tone, body type
-2. Their pose: how are they positioned, what are they doing
-3. Their clothing: what exactly are they wearing, colors, materials
-4. The environment: where is this, what's in the background
-5. The photo style: lighting, camera angle, mood
-
-Return ONLY valid JSON. Be specific about what you actually see in this image."""
-
-    logger.info(f"Pass 1: Image Analysis with {model}...")
+    logger.info(f"Pass 1: Structured Analysis with {model}...")
     data = {}
     
     try:
         response1 = ollama.chat(
             model=model, 
-            messages=[{'role': 'user', 'content': observation_prompt, 'images': [str(temp_path)]}], 
-            options={"temperature": 0.2, "num_predict": 2048, "num_ctx": 8192}
+            messages=[{'role': 'user', 'content': complex_prompt, 'images': [str(temp_path)]}], 
+            options={"temperature": 0.1, "num_predict": 2048, "num_ctx": 8192} 
         )
-        raw = response1['message']['content']
-        logger.info(f"Pass 1 raw (first 300 chars): {raw[:300]}")
-        parsed = extract_json_from_text(raw)
-        
-        if parsed:
-            # Convert whatever format the model returns to our standard format
-            data["subject"] = {}
-            data["pose"] = {}
-            data["clothing"] = {}
-            data["environment"] = {}
-            data["style"] = {}
-            
-            # Extract person info - check various possible keys
-            person = parsed.get("person") or parsed.get("subject") or parsed.get("1") or {}
-            if isinstance(person, str):
-                data["subject"]["description"] = person
-            elif isinstance(person, dict):
-                data["subject"]["description"] = person.get("description", "")
-                data["subject"]["age"] = person.get("age", "")
-                data["subject"]["ethnicity"] = person.get("ethnicity", person.get("gender", ""))
-                data["subject"]["body_type"] = person.get("body_type", person.get("body", ""))
-                
-                # Face
-                data["subject"]["face"] = {}
-                data["subject"]["face"]["eyes"] = person.get("eye_color", person.get("eyes", ""))
-                data["subject"]["face"]["skin"] = person.get("skin_tone", person.get("skin", ""))
-                data["subject"]["face"]["expression"] = person.get("expression", "")
-                
-                # Hair
-                data["subject"]["hair"] = {}
-                hair = person.get("hair", "")
-                if isinstance(hair, dict):
-                    data["subject"]["hair"]["color"] = hair.get("color", "")
-                    data["subject"]["hair"]["style"] = hair.get("style", "")
-                elif isinstance(hair, str):
-                    data["subject"]["hair"]["style"] = hair
-                    # Try to extract color
-                    hair_color = person.get("hair_color", "")
-                    if hair_color:
-                        data["subject"]["hair"]["color"] = hair_color
-            
-            # Extract pose info
-            pose = parsed.get("pose") or parsed.get("2") or parsed.get("position") or {}
-            if isinstance(pose, str):
-                data["pose"]["type"] = pose
-            elif isinstance(pose, dict):
-                data["pose"] = pose
-            
-            # Extract clothing info
-            clothing = parsed.get("clothing") or parsed.get("3") or parsed.get("outfit") or {}
-            if isinstance(clothing, str):
-                data["clothing"]["outfit"] = clothing
-            elif isinstance(clothing, dict):
-                data["clothing"] = clothing
-            
-            # Extract environment info
-            env = parsed.get("environment") or parsed.get("4") or parsed.get("background") or parsed.get("location") or {}
-            if isinstance(env, str):
-                data["environment"]["location"] = env
-            elif isinstance(env, dict):
-                data["environment"] = env
-            
-            # Extract style info
-            style = parsed.get("style") or parsed.get("5") or parsed.get("photo") or {}
-            if isinstance(style, str):
-                data["style"]["aesthetic"] = style
-            elif isinstance(style, dict):
-                data["style"] = style
-            
-            logger.info(f"Pass 1 parsed successfully")
-    
+        data = extract_json_from_text(response1['message']['content'])
     except Exception as e: 
         logger.error(f"Pass 1 error: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
 
-    # Fallback if parsing failed
+    # Fallback
     if not data or not data.get("subject"):
-        logger.warning("⚠️ Pass 1 failed. Trying simple fallback...")
+        logger.warning("⚠️ Pass 1 failed. Trying fallback...")
         try:
-            simple_prompt = "Describe this image in JSON format with keys: subject, pose, clothing, environment, style"
-            response_fallback = ollama.chat(
-                model=model, 
-                messages=[{'role': 'user', 'content': simple_prompt, 'images': [str(temp_path)]}], 
-                options={"temperature": 0.3, "num_ctx": 8192}
-            )
+            simple_prompt = "Describe this image in JSON format: subject, pose, clothing, environment, style."
+            response_fallback = ollama.chat(model=model, messages=[{'role': 'user', 'content': simple_prompt, 'images': [str(temp_path)]}], options={"temperature": 0.2, "num_ctx": 8192})
             data = extract_json_from_text(response_fallback['message']['content'])
-        except: 
-            data = {}
+        except: data = {}
 
-    # Ensure structure exists
+    # Normalization
     if not isinstance(data, dict): data = {}
     data.setdefault("subject", {})
     data.setdefault("pose", {})
@@ -443,19 +393,17 @@ Return ONLY valid JSON. Be specific about what you actually see in this image.""
     data.setdefault("environment", {})
     data.setdefault("style", {})
     if not isinstance(data["subject"].get("face"), dict): data["subject"]["face"] = {}
-    if not isinstance(data["subject"].get("hair"), dict): data["subject"]["hair"] = {}
-
-    # PASS 2: MICRO-DETAILS (only if we got valid subject data)
-    if data.get("subject") and (data["subject"].get("description") or data["subject"].get("age")):
-        detail_prompt = """Look at this image for fine details. Return JSON:
-{
-    "skin": "skin texture and tone",
-    "body": "body proportions and build",
-    "pose_detail": "specific posture details",
-    "fabric": "clothing material and fit",
-    "lighting": "light direction and quality",
-    "accessories": "any jewelry or accessories"
-}"""
+    
+    # PASS 2: DETAIL SCAN
+    if data.get("subject"):
+        detail_prompt = """Scan for VISIBLE details. Return JSON:
+        {
+            "skin_imperfections": "visible texture, pores, freckles",
+            "body_proportions": { "build": "physique", "chest": "bust details", "shoulders": "width", "waist_ratio": "shape" },
+            "pose_details": "subtle posture details, hand position",
+            "material_physics": "fabric tension, drape, weight",
+            "lighting_nuance": "direction, shadow hardness, color temp"
+        }"""
         
         try:
             response2 = ollama.chat(
@@ -465,35 +413,33 @@ Return ONLY valid JSON. Be specific about what you actually see in this image.""
             )
             details = extract_json_from_text(response2['message']['content'])
             
-            if details:
-                if details.get("skin"):
-                    data["subject"]["face"]["skin"] = details["skin"]
-                if details.get("body"):
-                    data["subject"]["body_proportions"] = details["body"] if isinstance(details["body"], dict) else {"build": details["body"]}
-                if details.get("pose_detail"):
-                    data["pose"]["details"] = details["pose_detail"]
-                if details.get("fabric"):
-                    data["clothing"]["fit"] = details["fabric"]
-                if details.get("lighting"):
-                    data["environment"]["lighting"] = details["lighting"]
-                if details.get("accessories"):
-                    acc_val = details["accessories"]
-                    # Clean up "None visible" and similar placeholders
-                    if isinstance(acc_val, str):
-                        acc_val = re.sub(r',?\s*(None\s*(visible)?|N/A|none)\s*,?', '', acc_val, flags=re.IGNORECASE).strip(", ")
-                    if acc_val:
-                        data["clothing"]["accessories"] = acc_val
-                    
+            # Merge Details
+            if details.get("skin_imperfections"):
+                data["subject"]["face"]["skin"] = str(details["skin_imperfections"])
+            
+            if details.get("body_proportions"):
+                data["subject"]["body_proportions"] = details["body_proportions"]
+
+            if details.get("pose_details"):
+                data["pose"]["details"] = str(details["pose_details"])
+            
+            if details.get("material_physics"):
+                current = data["clothing"].get("fit", "")
+                data["clothing"]["fit"] = f"{current}, {details['material_physics']}".strip(", ")
+
+            if details.get("lighting_nuance"):
+                data["environment"]["lighting"] = str(details["lighting_nuance"])
+
         except Exception as e: 
             logger.error(f"Pass 2 failed: {e}")
     
     return data
 
-# --- SHARED PERSONA LOGIC (Works with OLD format: subject, pose, clothing, environment) ---
+# --- SHARED PERSONA LOGIC (FIXED: Reference at Top) ---
 def apply_persona_to_data(data: dict, persona_id: str, use_ref_mode: bool = False):
     """
     Injects persona data into the analysis JSON.
-    Works with OLD format (subject.face, subject.hair, etc.)
+    Forces 'reference_image_instruction' to be the FIRST key.
     """
     if persona_id == "none": 
         return data
@@ -508,85 +454,65 @@ def apply_persona_to_data(data: dict, persona_id: str, use_ref_mode: bool = Fals
     p_data = persona.get("profile") or persona.get("subject") or {}
     
     # Ensure target structure exists
-    if not isinstance(data.get("subject"), dict):
-        data["subject"] = {}
-    if not isinstance(data["subject"].get("face"), dict):
-        data["subject"]["face"] = {}
-    if not isinstance(data["subject"].get("hair"), dict):
-        data["subject"]["hair"] = {}
+    if not isinstance(data.get("subject"), dict): data["subject"] = {}
+    if not isinstance(data["subject"].get("face"), dict): data["subject"]["face"] = {}
+    if not isinstance(data["subject"].get("hair"), dict): data["subject"]["hair"] = {}
     
     # 1. Name
     data["subject"]["name"] = persona.get("name", "Character")
     
     # 2. Age and Ethnicity
-    if p_data.get("age"):
-        data["subject"]["age"] = p_data["age"]
-    if p_data.get("ethnicity"):
-        data["subject"]["ethnicity"] = p_data["ethnicity"]
+    if p_data.get("age"): data["subject"]["age"] = p_data["age"]
+    if p_data.get("ethnicity"): data["subject"]["ethnicity"] = p_data["ethnicity"]
     
     # 3. Facial features
     face = data["subject"]["face"]
-    
-    # Check if persona has nested facial_features (new profile format)
     p_facial = p_data.get("facial_features", {})
+    
     if p_facial:
         for key in ["eyes", "eye_color", "nose", "lips", "skin_tone", "expression", "face_structure"]:
-            if p_facial.get(key):
-                face[key] = p_facial[key]
+            if p_facial.get(key): face[key] = p_facial[key]
     else:
-        # Old format - fields at root level
         for key in ["eyes", "eye_color", "nose", "lips", "skin", "expression", "face_structure"]:
-            if p_data.get(key):
-                face[key] = p_data[key]
+            if p_data.get(key): face[key] = p_data[key]
     
     # 4. Hair
     hair = data["subject"]["hair"]
-    if p_facial.get("hair_color"):
-        hair["color"] = p_facial["hair_color"]
-    elif p_data.get("hair_color"):
-        hair["color"] = p_data["hair_color"]
-    elif isinstance(p_data.get("hair"), dict) and p_data["hair"].get("color"):
-        hair["color"] = p_data["hair"]["color"]
+    if p_facial.get("hair_color"): hair["color"] = p_facial["hair_color"]
+    elif p_data.get("hair_color"): hair["color"] = p_data["hair_color"]
     
-    if p_facial.get("hair_style"):
-        hair["style"] = p_facial["hair_style"]
-    elif p_data.get("hair_style"):
-        hair["style"] = p_data["hair_style"]
-    elif isinstance(p_data.get("hair"), dict) and p_data["hair"].get("style"):
-        hair["style"] = p_data["hair"]["style"]
+    if p_facial.get("hair_style"): hair["style"] = p_facial["hair_style"]
+    elif p_data.get("hair_style"): hair["style"] = p_data["hair_style"]
     
-    # 5. Body type and proportions
-    if p_data.get("body_type"):
-        data["subject"]["body_type"] = p_data["body_type"]
-    if p_data.get("body_proportions"):
-        data["subject"]["body_proportions"] = p_data["body_proportions"]
+    # 5. Body
+    if p_data.get("body_type"): data["subject"]["body_type"] = p_data["body_type"]
+    if p_data.get("body_proportions"): data["subject"]["body_proportions"] = p_data["body_proportions"]
     
-    # 6. Skin details
-    if p_data.get("skin_details"):
-        face["skin"] = p_data["skin_details"]
-    elif p_data.get("skin"):
-        face["skin"] = p_data["skin"]
+    # 6. Skin & Makeup
+    if p_data.get("skin_details"): face["skin"] = p_data["skin_details"]
+    elif p_data.get("skin"): face["skin"] = p_data["skin"]
     
-    # 7. Makeup
-    if p_data.get("makeup_style"):
-        face["makeup"] = p_data["makeup_style"]
-    elif p_data.get("makeup"):
-        face["makeup"] = p_data["makeup"]
+    if p_data.get("makeup_style"): face["makeup"] = p_data["makeup_style"]
+    elif p_data.get("makeup"): face["makeup"] = p_data["makeup"]
     
-    # 8. Eyewear
+    # 7. Eyewear
     if p_data.get("eyewear") and str(p_data["eyewear"]).lower() not in ["none", "no", "n/a", ""]:
-        if not isinstance(data.get("clothing"), dict):
-            data["clothing"] = {}
+        if not isinstance(data.get("clothing"), dict): data["clothing"] = {}
         current_acc = data["clothing"].get("accessories", "")
         data["clothing"]["accessories"] = f"{current_acc}, {p_data['eyewear']}".strip(", ")
     
-    # 9. Tattoos
+    # 8. Tattoos
     if p_data.get("tattoos") and str(p_data["tattoos"]).lower() not in ["none", "none visible", ""]:
         data["subject"]["tattoos"] = p_data["tattoos"]
     
-    # 10. Reference mode
+    # 9. Reference mode (FORCE TO TOP)
     if use_ref_mode:
-        data["reference_image_instruction"] = f"Maintain consistent appearance of {persona.get('name', 'Character')} from reference image."
+        ref_text = f"Maintain consistent appearance of {persona.get('name', 'Character')} from reference image."
+        # Remove existing key to ensure we can re-insert it at the top
+        if "reference_image_instruction" in data:
+            del data["reference_image_instruction"]
+        # Create new dict with ref instruction FIRST
+        data = {"reference_image_instruction": ref_text, **data}
     elif "reference_image_instruction" in data:
         del data["reference_image_instruction"]
     

@@ -506,6 +506,9 @@
         els.tabJson.onclick = () => switchTab('json');
         els.tabPrompt.onclick = () => switchTab('prompt');
         els.tabTags.onclick = () => switchTab('tags');
+		els.refineInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') els.refineBtn.click();
+        });
 
         function handleFile(f) {
             if(!f) return;
@@ -761,6 +764,10 @@
             showLoading("REFINING", "...");
             try { const res = await fetch('/refine', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ current_json: store.json, instruction: txt, model: els.writerModel.value }) }); const data = await res.json(); if(data.status === 'success') { store.json = data.json; jar.updateCode(JSON.stringify(data.json, null, 2)); els.refineInput.value = ''; showNotification('✨ Refined', 'success'); } } catch(e) { showNotification('❌ Failed', 'error'); } finally { hideLoading(); }
         };
+		
+		els.refineInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') els.refineBtn.click();
+        });
 
         // --- STYLE MANAGER LOGIC (FIXED) ---
         let allStyles = {};
