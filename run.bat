@@ -1,30 +1,37 @@
 @echo off
-TITLE AI Prompt Director
-CD /d "%~dp0"
+title AI Prompt Director
+echo ===================================================
+echo      AI PROMPT DIRECTOR - LAUNCHING
+echo ===================================================
 
-ECHO ======================================================
-ECHO      STARTING AI PROMPT DIRECTOR
-ECHO ======================================================
-
-REM 1. CHECK AND START OLLAMA
-tasklist /FI "IMAGENAME eq ollama.exe" 2>NUL | find /I /N "ollama.exe">NUL
-IF "%ERRORLEVEL%"=="0" (
-    ECHO [OK] Ollama is already running.
-) ELSE (
-    ECHO [INFO] Ollama not running. Starting background service...
-    REM Start Ollama minimized and hidden
-    start /min "" ollama serve
-    ECHO [OK] Ollama started.
+:: --- STEP 1: AUTO-START OLLAMA ---
+echo [1/3] Checking Ollama Status...
+tasklist | find /i "ollama.exe" >nul
+if %errorlevel% neq 0 (
+    echo    - Starting Ollama...
+    start /B ollama serve >nul 2>&1
+    timeout /t 5 >nul
+) else (
+    echo    - Ollama is running.
 )
 
-REM 2. CHECK VENV
-IF NOT EXIST "venv" (
-    ECHO [ERROR] Not installed! Please run INSTALL.bat first.
-    PAUSE
-    EXIT
+:: --- STEP 2: ACTIVATE VENV ---
+if exist "venv\Scripts\activate.bat" (
+    echo [2/3] Activating Virtual Environment...
+    call venv\Scripts\activate.bat
+) else (
+    echo [WARNING] venv not found. Running in global scope.
 )
 
-REM 3. LAUNCH APP
-call venv\Scripts\activate
-start "" "http://127.0.0.1:8000"
-python main.py
+:: --- STEP 3: LAUNCH APP ---
+echo [3/3] Starting Web Server...
+echo.
+echo    UI: http://127.0.0.1:8000
+echo.
+
+start "" /b cmd /c "timeout /t 4 >nul & start http://127.0.0.1:8000"
+
+:: Start Server
+python -m uvicorn main:app --host 127.0.0.1 --port 8000 --log-level info
+
+pause

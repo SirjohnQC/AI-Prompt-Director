@@ -136,6 +136,7 @@
             <div class="flex gap-2">
                 <button id="clear-history-btn" class="text-[10px] text-red-500 hover:text-red-400 font-bold hover:underline transition-colors">CLEAR</button>
                 <button id="quit-btn" class="bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white px-2 py-1 rounded border border-red-500/30 transition-all text-[10px] font-bold">QUIT</button>
+				<button id="flush-btn" class="text-[10px] text-orange-500 hover:text-orange-400 font-bold ml-2">FREE RAM</button>
             </div>
         </div>
         <div id="history-list" class="overflow-y-auto p-4 space-y-2 h-48 custom-scrollbar"></div>
@@ -226,7 +227,7 @@
         <div id="scan-msg" class="hidden text-center text-xs text-cyan-400 font-bold mb-2">Scanning...</div>
 
         <div id="manual-fields" class="hidden space-y-4">
-            <div class="grid grid-cols-3 gap-2">
+            <div class="grid grid-cols-2 gap-2">
                 <div>
                     <label class="block text-[10px] text-slate-500 font-bold uppercase mb-1">Age</label>
                     <input id="p-age" class="w-full bg-[#0d1117] border border-white/10 rounded px-2 py-2 text-xs text-white focus:border-purple-500 outline-none">
@@ -235,12 +236,19 @@
                     <label class="block text-[10px] text-slate-500 font-bold uppercase mb-1">Ethnicity</label>
                     <input id="p-ethnicity" class="w-full bg-[#0d1117] border border-white/10 rounded px-2 py-2 text-xs text-white focus:border-purple-500 outline-none">
                 </div>
-                <div>
-                    <label class="block text-[10px] text-slate-500 font-bold uppercase mb-1">Body</label>
-                    <input id="p-body" class="w-full bg-[#0d1117] border border-white/10 rounded px-2 py-2 text-xs text-white focus:border-purple-500 outline-none">
+            </div>
+
+            <div class="bg-[#0d1117] border border-white/5 rounded p-2 mb-2">
+                <p class="text-[9px] text-purple-400 font-bold mb-2 uppercase tracking-wider">Body Morphology</p>
+                <div class="grid grid-cols-2 gap-2 mb-2">
+                    <div><label class="block text-[9px] text-slate-500">BUILD</label><input id="p-build" placeholder="e.g. Voluminous, Curvy" class="w-full bg-slate-900 border border-white/5 rounded px-2 py-1 text-[10px] text-slate-300"></div>
+                    <div><label class="block text-[9px] text-slate-500">CHEST</label><input id="p-chest" placeholder="e.g. Large volume, projection" class="w-full bg-slate-900 border border-white/5 rounded px-2 py-1 text-[10px] text-slate-300"></div>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div><label class="block text-[9px] text-slate-500">SHOULDERS</label><input id="p-shoulders" placeholder="e.g. Soft, rounded" class="w-full bg-slate-900 border border-white/5 rounded px-2 py-1 text-[10px] text-slate-300"></div>
+                    <div><label class="block text-[9px] text-slate-500">WAIST RATIO</label><input id="p-waist" placeholder="e.g. Hourglass" class="w-full bg-slate-900 border border-white/5 rounded px-2 py-1 text-[10px] text-slate-300"></div>
                 </div>
             </div>
-            
             <div class="grid grid-cols-2 gap-2">
                 <div>
                     <label class="block text-[10px] text-slate-500 font-bold uppercase mb-1">Face Shape</label>
@@ -414,9 +422,13 @@
             clearHistory: document.getElementById('clear-history-btn'),
             downloadBtn: document.getElementById('download-btn'),
             copyBtn: document.getElementById('copy-btn'),
+            flushBtn: document.getElementById('flush-btn'),
             pAge: document.getElementById('p-age'),
             pEthnicity: document.getElementById('p-ethnicity'),
-            pBody: document.getElementById('p-body'),
+            pBuild: document.getElementById('p-build'),
+            pChest: document.getElementById('p-chest'),
+            pShoulders: document.getElementById('p-shoulders'),
+            pWaist: document.getElementById('p-waist'),
             pFace: document.getElementById('p-face'),
             pSkin: document.getElementById('p-skin'),
             pEyes: document.getElementById('p-eyes'),
@@ -447,7 +459,7 @@
             cloudError: document.getElementById('cloud-error')
         };
 
-        // --- HANDLERS (Restored Tab Clicks & Drag Drop) ---
+        // --- HANDLERS ---
         els.tabJson.onclick = () => switchTab('json');
         els.tabPrompt.onclick = () => switchTab('prompt');
         els.tabTags.onclick = () => switchTab('tags');
@@ -503,6 +515,16 @@
             els.copyBtn.classList.add('text-green-400', 'border-green-400');
             setTimeout(() => { els.copyBtn.innerHTML = orig; els.copyBtn.classList.remove('text-green-400', 'border-green-400'); }, 1500);
         });
+
+        if(els.flushBtn) {
+            els.flushBtn.onclick = async () => {
+                showNotification("🧹 Cleaning VRAM...", "info");
+                try {
+                    await fetch('/system/free-vram', {method: 'POST'});
+                    showNotification("✨ Memory Freed", "success");
+                } catch(e) { showNotification("❌ Cleanup Failed", "error"); }
+            };
+        }
 
         // --- NEW: RESCAN LOGIC ---
         if(els.triggerRescan) els.triggerRescan.onclick = () => els.scanInput.click();
@@ -656,13 +678,26 @@
                 const imgUrl = `/persona-image/${pid}?t=${Date.now()}`; 
                 els.scanMain.src = imgUrl; els.scanBlur.src = imgUrl;
                 els.manualFields.classList.remove('hidden');
+                
                 const s = p.subject || {};
+                const bp = s.body_proportions || {}; // Get nested object
                 const h = (s.hair && typeof s.hair === 'object') ? s.hair : { color: "", style: (typeof s.hair === 'string' ? s.hair : "") };
-                els.pAge.value = s.age || ""; els.pEthnicity.value = s.ethnicity || ""; els.pBody.value = s.body_type || "";
-                els.pFace.value = s.face_structure || ""; els.pSkin.value = s.skin || ""; els.pEyes.value = s.eyes || "";
-                els.pNose.value = s.nose || ""; els.pLips.value = s.lips || ""; els.pTattoos.value = s.tattoos || "";
+                
+                els.pAge.value = s.age || ""; 
+                els.pEthnicity.value = s.ethnicity || ""; 
+                els.pBuild.value = bp.build || s.body_type || ""; 
+                els.pChest.value = bp.chest || "";
+                els.pShoulders.value = bp.shoulders || "";
+                els.pWaist.value = bp.waist_to_chest_ratio || "";
+                els.pFace.value = s.face_structure || ""; 
+                els.pSkin.value = s.skin || ""; 
+                els.pEyes.value = s.eyes || "";
+                els.pNose.value = s.nose || ""; 
+                els.pLips.value = s.lips || ""; 
+                els.pTattoos.value = s.tattoos || "";
                 els.pMakeup.value = s.makeup || "";
-                els.pHairColor.value = h.color || ""; els.pHairStyle.value = h.style || "";
+                els.pHairColor.value = h.color || ""; 
+                els.pHairStyle.value = h.style || "";
             }
         }
         
@@ -677,7 +712,13 @@
                 if(res.ok) {
                     const data = await res.json(); await loadPersonas(); els.manualFields.classList.remove('hidden');
                     const s = data.data.subject;
-                    els.pAge.value = s.age || ""; els.pEthnicity.value = s.ethnicity || ""; els.pBody.value = s.body_type || "";
+                    const bp = s.body_proportions || {};
+                    
+                    els.pAge.value = s.age || ""; els.pEthnicity.value = s.ethnicity || ""; 
+                    els.pBuild.value = bp.build || s.body_type || "";
+                    els.pChest.value = bp.chest || "";
+                    els.pShoulders.value = bp.shoulders || "";
+                    els.pWaist.value = bp.waist_to_chest_ratio || "";
                     els.pFace.value = s.face_structure || ""; els.pSkin.value = s.skin || ""; els.pEyes.value = s.eyes || "";
                     els.pNose.value = s.nose || ""; els.pLips.value = s.lips || ""; els.pTattoos.value = s.tattoos || "";
                     els.pMakeup.value = s.makeup || "";
@@ -690,42 +731,56 @@
         };
 
         els.updateManualBtn.onclick = async () => {
-            const pid = els.editPid.value; if(!pid) return;
+            const pid = els.editPid.value;
+            if(!pid) return;
+            
             const sub = {
-                age: els.pAge.value, ethnicity: els.pEthnicity.value, body_type: els.pBody.value,
-                face_structure: els.pFace.value, skin: els.pSkin.value, eyes: els.pEyes.value,
-                nose: els.pNose.value, lips: els.pLips.value, tattoos: els.pTattoos.value, makeup: els.pMakeup.value,
+                age: els.pAge.value, 
+                ethnicity: els.pEthnicity.value,
+                body_proportions: {
+                    build: els.pBuild.value,
+                    chest: els.pChest.value,
+                    shoulders: els.pShoulders.value,
+                    waist_to_chest_ratio: els.pWaist.value
+                },
+                body_type: els.pBuild.value, 
+                face_structure: els.pFace.value, 
+                skin: els.pSkin.value, 
+                eyes: els.pEyes.value,
+                nose: els.pNose.value, 
+                lips: els.pLips.value, 
+                tattoos: els.pTattoos.value,
+                makeup: els.pMakeup.value,
                 hair: { color: els.pHairColor.value, style: els.pHairStyle.value }
             };
-            await fetch(`/personas/${pid}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ name: els.pName.value, subject: sub }) });
+            
+            await fetch(`/personas/${pid}`, {
+                method: 'PUT', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ name: els.pName.value, subject: sub })
+            });
             await loadPersonas(); els.modal.classList.add('hidden'); showNotification(`✅ Persona "${els.pName.value}" updated`, 'success');
         };
 
         els.actionBtn.onclick = async () => {
             if (currentMode === 'json') {
-                // 1. Validation
                 if (inputMode === 'image' && !store.file && !store.url) return showNotification('⚠️ Upload an image or enter URL', 'warning');
                 if (inputMode === 'text' && !els.textPromptInput.value.trim()) return showNotification('⚠️ Enter a prompt to parse', 'warning');
 
-                // 2. Visual Feedback
                 showLoading(inputMode === 'image' ? "ANALYZING" : "PARSING", "Processing...");
                 jar.updateCode("// Processing... please wait."); 
                 
                 const fd = new FormData();
-                
-                // 3. Construct Data
                 if (inputMode === 'image') {
                     if (store.file) fd.append('file', store.file);
                     if (store.url) fd.append('image_url', store.url);
-                    fd.append('text_prompt', ''); // Clear text
+                    fd.append('text_prompt', ''); 
                 } else {
                     fd.append('text_prompt', els.textPromptInput.value.trim());
-                    fd.append('image_url', ''); // Clear image
+                    fd.append('image_url', ''); 
                 }
 
-                // 4. Settings & Persona
                 fd.append('model', els.visionModel.value);
-                fd.append('persona_id', els.persona.value); // This ensures the NEW persona is sent
+                fd.append('persona_id', els.persona.value); 
                 fd.append('time_override', els.time.value);
                 fd.append('ratio_override', els.ratio.value);
                 fd.append('style_override', els.style.value);
@@ -735,30 +790,21 @@
                 fd.append('makeup_override', els.makeup.value);
                 fd.append('glasses_override', els.glasses.value);
                 fd.append('expr_override', els.expr.value);
+                fd.append('reference_mode', els.refMode.checked); // Pass Ref Mode for Analysis too
                 
                 try {
                     const res = await fetch('/analyze', { method: 'POST', body: fd });
                     const data = await res.json();
-                    
                     if (data.error) throw new Error(data.error);
                     
-                    // FIX 1: Reference Instruction works for ALL modes now
-                    if (els.refMode.checked) {
-                        data["reference_image_instruction"] = "Keep the same person from the reference image.";
-                    }
-                    
-                    // FIX 2: Clear stale prompts/tags so user doesn't see old data
                     store.json = data;
                     store.prompt = null;
                     store.tags = null;
                     
-                    // Update Editor
                     jar.updateCode(JSON.stringify(data, null, 2));
                     updateHistoryUI();
                     
-                    // FIX 3: Force switch to JSON tab to show new results
                     if (currentMode !== 'json') switchTab('json');
-                    
                     showNotification(inputMode === 'image' ? '✨ Analysis Complete' : '✨ Prompt Parsed & Adapted', 'success');
                     
                 } catch(e) { 
@@ -769,7 +815,6 @@
                 }
             } 
             
-            // ... (Keep existing PROMPT logic) ...
             else if (currentMode === 'prompt') {
                 if (!store.json) return showNotification('⚠️ Generate JSON first', 'warning');
                 showLoading("WRITING", "Writer Model: " + els.writerModel.value);
@@ -787,7 +832,6 @@
                     showNotification('✨ Prompt Generated', 'success');
                 } catch(e) { showNotification('❌ Failed: ' + e.message, 'error'); } finally { hideLoading(); }
             }
-            // ... (Keep existing TAGS logic) ...
             else if (currentMode === 'tags') {
                 if (!store.file && !store.url) return showNotification('⚠️ Upload an image', 'warning');
                 showLoading("TAGGING", "Tagger Model: " + els.taggerModel.value);
@@ -855,8 +899,8 @@
                 if(data.status === 'success') { els.cloudResult.src = "data:image/png;base64," + data.image; els.cloudResult.classList.remove('hidden'); } else throw new Error(data.message);
             } catch(e) { els.cloudError.innerText = e.message; els.cloudError.classList.remove('hidden'); } finally { els.cloudLoader.classList.add('hidden'); }
         };
-		
-		// --- AUTO-INJECT LISTENER (QUICK SWAP) ---
+        
+        // --- AUTO-INJECT LISTENER (QUICK SWAP) ---
         els.persona.addEventListener('change', async () => {
             // Only run if we have active JSON data
             if (!store.json || Object.keys(store.json).length === 0) return;
@@ -869,27 +913,18 @@
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({ 
                         json: store.json, 
-                        persona_id: els.persona.value 
+                        persona_id: els.persona.value,
+                        reference_mode: els.refMode.checked 
                     })
                 });
                 
                 const data = await res.json();
                 
                 if(data.status === 'success') {
-                    // Update global store
                     store.json = data.json;
-                    
-                    // Update Editor View if currently on JSON tab
-                    if (currentMode === 'json') {
-                        jar.updateCode(JSON.stringify(data.json, null, 2));
-                    }
-                    
+                    if (currentMode === 'json') jar.updateCode(JSON.stringify(data.json, null, 2));
                     showNotification(`✨ Switched to ${els.persona.options[els.persona.selectedIndex].text}`, "success");
-                    
-                    // OPTIONAL: If we are on the Prompt tab, automatically regenerate the prompt
-                    if (currentMode === 'prompt') {
-                        els.actionBtn.click(); // This triggers the writer logic again with new JSON
-                    }
+                    if (currentMode === 'prompt') els.actionBtn.click(); 
                 } else {
                     throw new Error(data.message);
                 }

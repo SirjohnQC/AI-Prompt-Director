@@ -3,5 +3,5 @@ uvicorn
 python-multipart
 requests
 ollama
-pydantic
+Pillow
 jinja2
