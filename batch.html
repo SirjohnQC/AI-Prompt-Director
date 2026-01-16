@@ -65,6 +65,7 @@
                             <option value="detailed">Detailed (Structured JSON)</option>
                             <option value="simple">Simple (One sentence)</option>
                             <option value="tags">Tags Only (Comma separated)</option>
+                            <option value="prompt">Natural Prompt (Full description)</option>
                         </select>
                     </div>
                 </div>
@@ -74,8 +75,8 @@
                     <div>
                         <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Output Format</label>
                         <select id="batch-output-format" class="w-full bg-[#161b22] border border-white/10 rounded-lg px-3 py-2 text-xs text-slate-300 focus:border-cyan-500 outline-none">
-                            <option value="txt">.txt files (LoRA ready)</option>
-                            <option value="json">.json files (Structured)</option>
+                            <option value="txt">.txt files only</option>
+                            <option value="json">.json files only</option>
                             <option value="both">Both .txt and .json</option>
                         </select>
                     </div>
@@ -89,11 +90,61 @@
                     </div>
                 </div>
                 
+                <!-- Smart Resize Option -->
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Smart Resize (Face-focused)</label>
+                        <select id="batch-resize" class="w-full bg-[#161b22] border border-white/10 rounded-lg px-3 py-2 text-xs text-slate-300 focus:border-cyan-500 outline-none">
+                            <option value="none">No resize</option>
+                            <option value="512">512 × 512</option>
+                            <option value="768">768 × 768</option>
+                            <option value="1024" selected>1024 × 1024</option>
+                            <option value="1280">1280 × 1280</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Crop Mode</label>
+                        <select id="batch-crop-mode" class="w-full bg-[#161b22] border border-white/10 rounded-lg px-3 py-2 text-xs text-slate-300 focus:border-cyan-500 outline-none">
+                            <option value="face">Face-centered (Smart)</option>
+                            <option value="center">Center crop</option>
+                            <option value="top">Top (head priority)</option>
+                            <option value="fit">Fit (no crop, pad)</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <!-- Include Images + Rename Options -->
+                <div class="grid grid-cols-2 gap-4">
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" id="batch-include-images" checked class="w-4 h-4 rounded bg-slate-800 border-slate-600 text-cyan-500 focus:ring-cyan-500">
+                        <span class="text-[10px] text-slate-400">Include images in ZIP</span>
+                    </label>
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" id="batch-rename-files" checked class="w-4 h-4 rounded bg-slate-800 border-slate-600 text-cyan-500 focus:ring-cyan-500">
+                        <span class="text-[10px] text-slate-400">Rename to 001, 002, 003...</span>
+                    </label>
+                </div>
+                
+                <!-- Narrative Style (shown when prompt style is selected) -->
+                <div id="batch-narrative-section" class="hidden">
+                    <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Narrative Style</label>
+                    <select id="batch-narrative-style" class="w-full bg-[#161b22] border border-white/10 rounded-lg px-3 py-2 text-xs text-slate-300 focus:border-green-500 outline-none">
+                        <option value="default">Standard</option>
+                    </select>
+                </div>
+                
                 <!-- Info Box -->
-                <div class="bg-cyan-500/10 border border-cyan-500/20 rounded-lg p-3 text-[10px] text-cyan-300">
-                    <i class="fas fa-info-circle mr-1"></i>
-                    <strong>LoRA Tip:</strong> For training, use "Tags Only" style and ".txt files" output. 
-                    Each image.jpg will get a matching image.txt caption file.
+                <div class="bg-cyan-500/10 border border-cyan-500/20 rounded-lg p-3 text-[10px] text-cyan-300 space-y-2">
+                    <div>
+                        <i class="fas fa-info-circle mr-1"></i>
+                        <strong>LoRA Tips:</strong>
+                    </div>
+                    <ul class="list-disc list-inside space-y-1 text-cyan-200/80">
+                        <li>Select a <strong>Persona</strong> to add trigger word to captions</li>
+                        <li>Use <strong>Smart Resize</strong> with face-centered crop for best results</li>
+                        <li>Common sizes: 512 (SD1.5), 1024 (SDXL/Flux)</li>
+                        <li>Use unique trigger word (e.g. <code class="bg-cyan-900/50 px-1 rounded">Chl03</code>)</li>
+                    </ul>
                 </div>
             </div>
             
@@ -173,6 +224,9 @@
     const newBatchBtn = document.getElementById('batch-new-btn');
     const modelSelect = document.getElementById('batch-model');
     const personaSelect = document.getElementById('batch-persona');
+    const captionStyleSelect = document.getElementById('batch-caption-style');
+    const narrativeSection = document.getElementById('batch-narrative-section');
+    const narrativeStyleSelect = document.getElementById('batch-narrative-style');
     
     let selectedFiles = [];
     let currentJobId = null;
@@ -188,7 +242,16 @@
     closeBtn.onclick = () => modal.classList.add('hidden');
     modal.onclick = (e) => { if (e.target === modal) modal.classList.add('hidden'); };
     
-    // Load models and personas into dropdowns
+    // Toggle narrative style visibility based on caption style
+    captionStyleSelect.onchange = () => {
+        if (captionStyleSelect.value === 'prompt') {
+            narrativeSection.classList.remove('hidden');
+        } else {
+            narrativeSection.classList.add('hidden');
+        }
+    };
+    
+    // Load models, personas, and styles into dropdowns
     async function loadBatchSettings() {
         try {
             // Load models
@@ -206,6 +269,13 @@
             
             personaSelect.innerHTML = '<option value="none">None (Auto-detect)</option>' +
                 personas.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+            
+            // Load narrative styles
+            const stylesRes = await fetch('/styles');
+            const styles = await stylesRes.json();
+            
+            narrativeStyleSelect.innerHTML = '<option value="default">Standard</option>' +
+                Object.keys(styles).map(name => `<option value="${name}">${name}</option>`).join('');
                 
         } catch(e) {
             console.error('Failed to load batch settings:', e);
@@ -299,9 +369,14 @@
         const formData = new FormData();
         selectedFiles.forEach(f => formData.append('files', f));
         formData.append('model', modelSelect.value);
-        formData.append('caption_style', document.getElementById('batch-caption-style').value);
+        formData.append('caption_style', captionStyleSelect.value);
         formData.append('output_format', document.getElementById('batch-output-format').value);
         formData.append('persona_id', personaSelect.value);
+        formData.append('narrative_style', narrativeStyleSelect.value);
+        formData.append('include_images', document.getElementById('batch-include-images').checked);
+        formData.append('rename_files', document.getElementById('batch-rename-files').checked);
+        formData.append('resize_size', document.getElementById('batch-resize').value);
+        formData.append('crop_mode', document.getElementById('batch-crop-mode').value);
         
         // Show progress
         dropZone.classList.add('hidden');

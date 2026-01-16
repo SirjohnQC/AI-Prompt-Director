@@ -37,10 +37,6 @@
                 </h1>
                 <p class="text-[9px] text-slate-500 mt-0.5 uppercase tracking-wider">v2.0 • Intelligent Analysis</p>
             </div>
-            <div class="flex gap-2">
-                <button id="batch-btn" class="text-slate-400 hover:text-cyan-400 transition-colors" title="Batch Analyzer"><i class="fas fa-layer-group text-sm"></i></button>
-                <button id="settings-btn-sidebar" class="text-slate-400 hover:text-white transition-colors" title="Settings"><i class="fas fa-cog text-sm"></i></button>
-            </div>
         </div>
 
         <div class="flex-1 overflow-y-auto custom-scrollbar p-5 flex flex-col gap-5">
@@ -189,6 +185,7 @@
             </div>
             
             <div class="flex gap-2 ml-auto">
+                <button id="batch-btn" class="text-xs text-cyan-400 hover:text-cyan-300 font-bold border border-cyan-400/20 px-3 py-1.5 rounded hover:bg-cyan-400/10 transition-colors flex items-center gap-2" title="Batch Image Analyzer"><i class="fas fa-layer-group"></i> BATCH</button>
                 <button id="download-btn" class="text-xs text-slate-400 hover:text-slate-300 font-bold border border-slate-600/20 px-3 py-1.5 rounded hover:bg-slate-600/10 transition-colors"><i class="fas fa-download"></i></button>
                 <button id="copy-btn" class="text-xs text-cyan-400 hover:text-cyan-300 font-bold border border-cyan-400/20 px-3 py-1.5 rounded hover:bg-cyan-400/10 transition-colors">COPY</button>
             </div>
@@ -489,8 +486,7 @@
             styleInstruction: document.getElementById('style-instruction'),
             styleName: document.getElementById('style-name'),
             saveStyleBtn: document.getElementById('save-style-btn'),
-            closeStyleModal: document.getElementById('close-style-modal'),
-            settingsBtnSidebar: document.getElementById('settings-btn-sidebar')
+            closeStyleModal: document.getElementById('close-style-modal')
         };
 
         // --- STICKY SETTINGS HELPER ---
@@ -600,6 +596,41 @@
         }
         els.modeImage.onclick = () => setInputMode('image');
         els.modeText.onclick = () => setInputMode('text');
+        
+        // Handle image paste in text mode - auto-switch to image mode
+        els.textPromptInput.addEventListener('paste', (e) => {
+            const items = e.clipboardData?.items;
+            if (!items) return;
+            
+            for (const item of items) {
+                if (item.type.startsWith('image/')) {
+                    e.preventDefault();
+                    const file = item.getAsFile();
+                    if (file) {
+                        // Switch to image mode and load the pasted image
+                        setInputMode('image');
+                        store.file = file;
+                        store.url = null;
+                        
+                        // Show preview
+                        const reader = new FileReader();
+                        reader.onload = (ev) => {
+                            const preview = document.getElementById('preview-img');
+                            const placeholder = document.getElementById('drop-placeholder');
+                            if (preview && placeholder) {
+                                preview.src = ev.target.result;
+                                preview.classList.remove('hidden');
+                                placeholder.classList.add('hidden');
+                            }
+                        };
+                        reader.readAsDataURL(file);
+                        
+                        showNotification('📋 Image pasted! Switched to IMAGE mode', 'success');
+                    }
+                    return;
+                }
+            }
+        });
 
         function showNotification(message, type = 'info', duration = 3000) {
             const n = document.createElement('div');
@@ -835,7 +866,7 @@
         els.clearHistory.onclick = async () => { await fetch('/history', {method:'DELETE'}); updateHistoryUI(); };
         document.getElementById('quit-btn').onclick = async () => { await fetch('/shutdown', {method:'POST'}); window.close(); };
         els.settingsBtn.onclick = () => els.settingsModal.classList.remove('hidden'); els.closeSettings.onclick = () => els.settingsModal.classList.add('hidden'); els.closeImgModal.onclick = () => els.imgModal.classList.add('hidden');
-        if(els.settingsBtnSidebar) els.settingsBtnSidebar.onclick = () => els.settingsModal.classList.remove('hidden');
+        els.settingsBtn.onclick = () => els.settingsModal.classList.remove('hidden');
         els.keyGoogle.value = localStorage.getItem('google_key') || ""; els.keyFal.value = localStorage.getItem('fal_key') || ""; els.keyXai.value = localStorage.getItem('xai_key') || "";
         els.saveKeysBtn.onclick = () => { localStorage.setItem('google_key', els.keyGoogle.value); localStorage.setItem('fal_key', els.keyFal.value); localStorage.setItem('xai_key', els.keyXai.value); els.settingsModal.classList.add('hidden'); showNotification("🔑 Keys Saved", "success"); };
         
