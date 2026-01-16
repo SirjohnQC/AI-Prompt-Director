@@ -37,7 +37,10 @@
                 </h1>
                 <p class="text-[9px] text-slate-500 mt-0.5 uppercase tracking-wider">v2.0 • Intelligent Analysis</p>
             </div>
-            <button id="settings-btn-sidebar" class="text-slate-400 hover:text-white transition-colors"><i class="fas fa-cog text-sm"></i></button>
+            <div class="flex gap-2">
+                <button id="batch-btn" class="text-slate-400 hover:text-cyan-400 transition-colors" title="Batch Analyzer"><i class="fas fa-layer-group text-sm"></i></button>
+                <button id="settings-btn-sidebar" class="text-slate-400 hover:text-white transition-colors" title="Settings"><i class="fas fa-cog text-sm"></i></button>
+            </div>
         </div>
 
         <div class="flex-1 overflow-y-auto custom-scrollbar p-5 flex flex-col gap-5">
@@ -902,7 +905,36 @@
             bindSticky(els.time, 'time'); bindSticky(els.ratio, 'ratio'); bindSticky(els.styleVisual, 'styleVisual'); bindSticky(els.quality, 'quality'); bindSticky(els.refMode, 'refMode', false); bindSticky(els.cloudModel, 'cloudModel', 'grok'); bindSticky(els.hairStyle, 'hairStyle'); bindSticky(els.hairColor, 'hairColor'); bindSticky(els.makeup, 'makeup'); bindSticky(els.glasses, 'glasses'); bindSticky(els.expr, 'expr');
 
             try { const vRes = await fetch('/version'); const vData = await vRes.json(); document.title = `AI Prompt Director v${vData.local}`; } catch(e) {}
+            
+            // Load batch modal
+            try {
+                const batchRes = await fetch('/batch-modal');
+                const batchHtml = await batchRes.text();
+                const container = document.getElementById('batch-modal-container');
+                container.innerHTML = batchHtml;
+                
+                // Execute scripts in the loaded HTML
+                const scripts = container.querySelectorAll('script');
+                scripts.forEach(oldScript => {
+                    const newScript = document.createElement('script');
+                    newScript.textContent = oldScript.textContent;
+                    oldScript.parentNode.replaceChild(newScript, oldScript);
+                });
+                console.log('✓ Batch modal loaded');
+            } catch(e) { console.error('Failed to load batch modal:', e); }
         })();
+        
+        // Batch button handler
+        document.getElementById('batch-btn').onclick = () => {
+            if (typeof window.openBatchModal === 'function') {
+                window.openBatchModal();
+            } else {
+                showNotification('⚠️ Batch module not loaded', 'warning');
+            }
+        };
     </script>
+    
+    <!-- Batch Modal Container (loaded dynamically) -->
+    <div id="batch-modal-container"></div>
 </body>
 </html>

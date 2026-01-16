@@ -1,0 +1,388 @@
+<!-- Batch Analyzer Modal -->
+<div id="batch-modal" class="hidden fixed inset-0 z-[80] flex items-center justify-center bg-black/90 backdrop-blur-sm">
+    <div class="bg-[#161b22] w-full max-w-2xl rounded-2xl border border-white/10 shadow-2xl max-h-[90vh] flex flex-col">
+        
+        <!-- Header -->
+        <div class="p-5 border-b border-white/10 flex justify-between items-center flex-shrink-0">
+            <div>
+                <h3 class="text-white font-bold text-lg flex items-center gap-2">
+                    <i class="fas fa-layer-group text-cyan-400"></i> Batch Image Analyzer
+                </h3>
+                <p class="text-[10px] text-slate-500 mt-1">Process multiple images for LoRA dataset preparation</p>
+            </div>
+            <button id="close-batch-modal" class="text-slate-500 hover:text-white transition-colors">
+                <i class="fas fa-times text-xl"></i>
+            </button>
+        </div>
+        
+        <!-- Content -->
+        <div class="flex-1 overflow-y-auto custom-scrollbar p-5 space-y-4">
+            
+            <!-- Upload Zone -->
+            <div id="batch-drop-zone" class="border-2 border-dashed border-cyan-500/30 rounded-xl p-8 text-center cursor-pointer hover:border-cyan-500 hover:bg-cyan-500/5 transition-all bg-[#0d1117]">
+                <input type="file" id="batch-file-input" class="hidden" multiple accept="image/*">
+                <div class="text-cyan-400 mb-3">
+                    <i class="fas fa-images text-4xl"></i>
+                </div>
+                <p class="text-white font-medium mb-1">Drop images here or click to browse</p>
+                <p class="text-[10px] text-slate-500">Supports JPG, PNG, WebP • Select multiple files</p>
+            </div>
+            
+            <!-- File List -->
+            <div id="batch-file-list" class="hidden">
+                <div class="flex justify-between items-center mb-2">
+                    <span class="text-xs text-slate-400 font-bold uppercase tracking-wider">
+                        <i class="fas fa-list mr-1"></i> Selected Files (<span id="batch-file-count">0</span>)
+                    </span>
+                    <button id="batch-clear-files" class="text-[10px] text-red-400 hover:text-red-300">
+                        <i class="fas fa-trash mr-1"></i> Clear All
+                    </button>
+                </div>
+                <div id="batch-files-container" class="bg-[#0d1117] rounded-lg border border-white/5 max-h-40 overflow-y-auto custom-scrollbar">
+                    <!-- Files will be listed here -->
+                </div>
+            </div>
+            
+            <!-- Settings -->
+            <div class="bg-[#0d1117] rounded-xl border border-white/5 p-4 space-y-4">
+                <p class="text-[9px] text-cyan-400 font-bold uppercase tracking-wider mb-3">
+                    <i class="fas fa-cog mr-1"></i> Processing Settings
+                </p>
+                
+                <div class="grid grid-cols-2 gap-4">
+                    <!-- Model Selection -->
+                    <div>
+                        <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Vision Model</label>
+                        <select id="batch-model" class="w-full bg-[#161b22] border border-white/10 rounded-lg px-3 py-2 text-xs text-slate-300 focus:border-cyan-500 outline-none">
+                            <option value="qwen3-vl:8b">qwen3-vl:8b</option>
+                        </select>
+                    </div>
+                    
+                    <!-- Caption Style -->
+                    <div>
+                        <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Caption Style</label>
+                        <select id="batch-caption-style" class="w-full bg-[#161b22] border border-white/10 rounded-lg px-3 py-2 text-xs text-slate-300 focus:border-cyan-500 outline-none">
+                            <option value="detailed">Detailed (Structured JSON)</option>
+                            <option value="simple">Simple (One sentence)</option>
+                            <option value="tags">Tags Only (Comma separated)</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="grid grid-cols-2 gap-4">
+                    <!-- Output Format -->
+                    <div>
+                        <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Output Format</label>
+                        <select id="batch-output-format" class="w-full bg-[#161b22] border border-white/10 rounded-lg px-3 py-2 text-xs text-slate-300 focus:border-cyan-500 outline-none">
+                            <option value="txt">.txt files (LoRA ready)</option>
+                            <option value="json">.json files (Structured)</option>
+                            <option value="both">Both .txt and .json</option>
+                        </select>
+                    </div>
+                    
+                    <!-- Persona -->
+                    <div>
+                        <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Apply Persona</label>
+                        <select id="batch-persona" class="w-full bg-[#161b22] border border-white/10 rounded-lg px-3 py-2 text-xs text-slate-300 focus:border-cyan-500 outline-none">
+                            <option value="none">None (Auto-detect)</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <!-- Info Box -->
+                <div class="bg-cyan-500/10 border border-cyan-500/20 rounded-lg p-3 text-[10px] text-cyan-300">
+                    <i class="fas fa-info-circle mr-1"></i>
+                    <strong>LoRA Tip:</strong> For training, use "Tags Only" style and ".txt files" output. 
+                    Each image.jpg will get a matching image.txt caption file.
+                </div>
+            </div>
+            
+            <!-- Progress Section (hidden until processing) -->
+            <div id="batch-progress-section" class="hidden bg-[#0d1117] rounded-xl border border-white/5 p-4">
+                <div class="flex justify-between items-center mb-3">
+                    <span class="text-xs text-slate-400 font-bold uppercase tracking-wider">
+                        <i class="fas fa-spinner fa-spin mr-1"></i> Processing
+                    </span>
+                    <span id="batch-progress-text" class="text-xs text-cyan-400">0 / 0</span>
+                </div>
+                
+                <div class="w-full bg-slate-800 rounded-full h-2 mb-3">
+                    <div id="batch-progress-bar" class="bg-cyan-500 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+                </div>
+                
+                <p id="batch-current-file" class="text-[10px] text-slate-500 truncate">
+                    <i class="fas fa-image mr-1"></i> Waiting...
+                </p>
+            </div>
+            
+            <!-- Results Section (hidden until complete) -->
+            <div id="batch-results-section" class="hidden bg-[#0d1117] rounded-xl border border-green-500/20 p-4">
+                <div class="flex justify-between items-center mb-3">
+                    <span class="text-xs text-green-400 font-bold uppercase tracking-wider">
+                        <i class="fas fa-check-circle mr-1"></i> Complete
+                    </span>
+                    <span id="batch-results-count" class="text-xs text-green-400">0 images processed</span>
+                </div>
+                
+                <div id="batch-results-list" class="max-h-32 overflow-y-auto custom-scrollbar mb-3 space-y-1">
+                    <!-- Results will be listed here -->
+                </div>
+                
+                <div class="flex gap-2">
+                    <button id="batch-download-btn" class="flex-1 bg-green-600 hover:bg-green-500 text-white py-2 rounded-lg font-bold text-xs transition-all">
+                        <i class="fas fa-download mr-1"></i> Download ZIP
+                    </button>
+                    <button id="batch-new-btn" class="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg font-bold text-xs transition-all">
+                        <i class="fas fa-redo mr-1"></i> New Batch
+                    </button>
+                </div>
+            </div>
+            
+        </div>
+        
+        <!-- Footer -->
+        <div class="p-4 border-t border-white/10 flex-shrink-0">
+            <button id="batch-start-btn" class="w-full bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-700 disabled:text-slate-500 text-white py-3 rounded-xl font-bold text-sm transition-all" disabled>
+                <i class="fas fa-play mr-2"></i> START BATCH ANALYSIS
+            </button>
+        </div>
+        
+    </div>
+</div>
+
+<script>
+(function() {
+    // Elements
+    const modal = document.getElementById('batch-modal');
+    const closeBtn = document.getElementById('close-batch-modal');
+    const dropZone = document.getElementById('batch-drop-zone');
+    const fileInput = document.getElementById('batch-file-input');
+    const fileList = document.getElementById('batch-file-list');
+    const filesContainer = document.getElementById('batch-files-container');
+    const fileCount = document.getElementById('batch-file-count');
+    const clearFilesBtn = document.getElementById('batch-clear-files');
+    const startBtn = document.getElementById('batch-start-btn');
+    const progressSection = document.getElementById('batch-progress-section');
+    const progressBar = document.getElementById('batch-progress-bar');
+    const progressText = document.getElementById('batch-progress-text');
+    const currentFile = document.getElementById('batch-current-file');
+    const resultsSection = document.getElementById('batch-results-section');
+    const resultsCount = document.getElementById('batch-results-count');
+    const resultsList = document.getElementById('batch-results-list');
+    const downloadBtn = document.getElementById('batch-download-btn');
+    const newBatchBtn = document.getElementById('batch-new-btn');
+    const modelSelect = document.getElementById('batch-model');
+    const personaSelect = document.getElementById('batch-persona');
+    
+    let selectedFiles = [];
+    let currentJobId = null;
+    
+    // Open modal function (called from main page)
+    window.openBatchModal = async function() {
+        modal.classList.remove('hidden');
+        resetBatchUI();
+        await loadBatchSettings();
+    };
+    
+    // Close modal
+    closeBtn.onclick = () => modal.classList.add('hidden');
+    modal.onclick = (e) => { if (e.target === modal) modal.classList.add('hidden'); };
+    
+    // Load models and personas into dropdowns
+    async function loadBatchSettings() {
+        try {
+            // Load models
+            const modelsRes = await fetch('/models');
+            const modelsData = await modelsRes.json();
+            const visionModels = modelsData.vision_models || [];
+            
+            modelSelect.innerHTML = visionModels.map(m => 
+                `<option value="${m}">${m}</option>`
+            ).join('') || '<option value="">No vision models</option>';
+            
+            // Load personas
+            const personasRes = await fetch('/personas');
+            const personas = await personasRes.json();
+            
+            personaSelect.innerHTML = '<option value="none">None (Auto-detect)</option>' +
+                personas.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+                
+        } catch(e) {
+            console.error('Failed to load batch settings:', e);
+        }
+    }
+    
+    // Reset UI
+    function resetBatchUI() {
+        selectedFiles = [];
+        currentJobId = null;
+        fileList.classList.add('hidden');
+        filesContainer.innerHTML = '';
+        fileCount.textContent = '0';
+        startBtn.disabled = true;
+        progressSection.classList.add('hidden');
+        resultsSection.classList.add('hidden');
+        progressBar.style.width = '0%';
+        dropZone.classList.remove('hidden');
+    }
+    
+    // File selection
+    dropZone.onclick = () => fileInput.click();
+    
+    dropZone.ondragover = (e) => {
+        e.preventDefault();
+        dropZone.classList.add('border-cyan-500', 'bg-cyan-500/10');
+    };
+    
+    dropZone.ondragleave = () => {
+        dropZone.classList.remove('border-cyan-500', 'bg-cyan-500/10');
+    };
+    
+    dropZone.ondrop = (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('border-cyan-500', 'bg-cyan-500/10');
+        handleFiles(e.dataTransfer.files);
+    };
+    
+    fileInput.onchange = (e) => handleFiles(e.target.files);
+    
+    function handleFiles(files) {
+        const imageFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
+        
+        if (imageFiles.length === 0) {
+            alert('Please select image files only');
+            return;
+        }
+        
+        selectedFiles = [...selectedFiles, ...imageFiles];
+        updateFileList();
+    }
+    
+    function updateFileList() {
+        if (selectedFiles.length === 0) {
+            fileList.classList.add('hidden');
+            startBtn.disabled = true;
+            return;
+        }
+        
+        fileList.classList.remove('hidden');
+        fileCount.textContent = selectedFiles.length;
+        startBtn.disabled = false;
+        
+        filesContainer.innerHTML = selectedFiles.map((f, i) => `
+            <div class="flex justify-between items-center px-3 py-2 border-b border-white/5 last:border-0">
+                <span class="text-xs text-slate-300 truncate flex-1 mr-2">
+                    <i class="fas fa-image text-slate-500 mr-2"></i>${f.name}
+                </span>
+                <span class="text-[10px] text-slate-500 mr-2">${(f.size / 1024).toFixed(1)} KB</span>
+                <button onclick="window.removeBatchFile(${i})" class="text-red-400 hover:text-red-300 text-xs">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+        `).join('');
+    }
+    
+    window.removeBatchFile = function(index) {
+        selectedFiles.splice(index, 1);
+        updateFileList();
+    };
+    
+    clearFilesBtn.onclick = () => {
+        selectedFiles = [];
+        updateFileList();
+    };
+    
+    // Start batch processing
+    startBtn.onclick = async () => {
+        if (selectedFiles.length === 0) return;
+        
+        const formData = new FormData();
+        selectedFiles.forEach(f => formData.append('files', f));
+        formData.append('model', modelSelect.value);
+        formData.append('caption_style', document.getElementById('batch-caption-style').value);
+        formData.append('output_format', document.getElementById('batch-output-format').value);
+        formData.append('persona_id', personaSelect.value);
+        
+        // Show progress
+        dropZone.classList.add('hidden');
+        fileList.classList.add('hidden');
+        startBtn.disabled = true;
+        startBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i> STARTING...';
+        progressSection.classList.remove('hidden');
+        resultsSection.classList.add('hidden');
+        
+        try {
+            const res = await fetch('/batch/analyze', {
+                method: 'POST',
+                body: formData
+            });
+            
+            const data = await res.json();
+            currentJobId = data.job_id;
+            
+            // Start polling for progress
+            pollProgress();
+            
+        } catch(e) {
+            alert('Failed to start batch: ' + e.message);
+            resetBatchUI();
+        }
+    };
+    
+    // Poll for progress
+    async function pollProgress() {
+        if (!currentJobId) return;
+        
+        try {
+            const res = await fetch(`/batch/status/${currentJobId}`);
+            const job = await res.json();
+            
+            const percent = job.total > 0 ? Math.round((job.completed / job.total) * 100) : 0;
+            progressBar.style.width = `${percent}%`;
+            progressText.textContent = `${job.completed} / ${job.total}`;
+            currentFile.innerHTML = `<i class="fas fa-image mr-1"></i> ${job.current_file || 'Processing...'}`;
+            
+            if (job.status === 'completed') {
+                showResults(job);
+            } else {
+                setTimeout(pollProgress, 500);
+            }
+            
+        } catch(e) {
+            console.error('Poll error:', e);
+            setTimeout(pollProgress, 1000);
+        }
+    }
+    
+    // Show results
+    function showResults(job) {
+        progressSection.classList.add('hidden');
+        resultsSection.classList.remove('hidden');
+        startBtn.innerHTML = '<i class="fas fa-play mr-2"></i> START BATCH ANALYSIS';
+        
+        const successCount = job.results.filter(r => r.success).length;
+        const errorCount = job.results.length - successCount;
+        
+        resultsCount.textContent = `${successCount} images processed` + (errorCount > 0 ? `, ${errorCount} errors` : '');
+        
+        resultsList.innerHTML = job.results.slice(0, 10).map(r => `
+            <div class="flex items-center gap-2 text-[10px] ${r.success ? 'text-green-400' : 'text-red-400'}">
+                <i class="fas ${r.success ? 'fa-check' : 'fa-exclamation-triangle'}"></i>
+                <span class="truncate">${r.filename}</span>
+            </div>
+        `).join('') + (job.results.length > 10 ? `<div class="text-[10px] text-slate-500">...and ${job.results.length - 10} more</div>` : '');
+    }
+    
+    // Download results
+    downloadBtn.onclick = async () => {
+        if (!currentJobId) return;
+        
+        const format = document.getElementById('batch-output-format').value;
+        window.location.href = `/batch/download/${currentJobId}?format=${format}`;
+    };
+    
+    // New batch
+    newBatchBtn.onclick = resetBatchUI;
+    
+})();
+</script>

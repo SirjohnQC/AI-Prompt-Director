@@ -38,6 +38,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Include batch router
+try:
+    from batch import router as batch_router
+    app.include_router(batch_router)
+    logger.info("✓ Batch analyzer module loaded")
+except ImportError as e:
+    logger.warning(f"⚠️ Batch module not loaded: {e}")
+except Exception as e:
+    logger.error(f"❌ Batch module error: {e}")
+    import traceback
+    logger.error(traceback.format_exc())
+
 # Directories
 BASE_DIR = Path(__file__).parent
 TEMP_DIR = BASE_DIR / "temp"
@@ -472,6 +484,15 @@ async def read_root(request: Request):
     if (BASE_DIR / "index.html").exists():
         return templates.TemplateResponse("index.html", {"request": request})
     return {"error": "index.html not found"}
+
+@app.get("/batch-modal", response_class=HTMLResponse)
+async def get_batch_modal():
+    """Serve the batch analyzer modal HTML"""
+    batch_file = BASE_DIR / "batch.html"
+    if batch_file.exists():
+        with open(batch_file, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    return HTMLResponse(content="<!-- Batch modal not found -->")
 
 @app.get("/health")
 async def health_check(): return {"status": "healthy"}
