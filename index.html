@@ -98,6 +98,7 @@
                     <select id="style-select" class="flex-1 bg-[#161b22] border border-white/10 rounded-lg px-3 py-2 text-xs text-green-100 focus:border-green-500 focus:outline-none transition-colors cursor-pointer">
                         <option value="default">Standard</option>
                     </select>
+                    <button id="delete-style-btn" class="bg-[#161b22] hover:bg-red-600 text-slate-500 hover:text-white px-3 rounded-lg border border-white/10 transition-all" title="Delete Style"><i class="fas fa-trash"></i></button>
                     <button id="open-style-btn" class="bg-[#161b22] hover:bg-slate-800 text-green-400 hover:text-white px-3 rounded-lg border border-white/10 transition-all" title="Learn New Style"><i class="fas fa-plus"></i></button>
                 </div>
             </div>
@@ -293,8 +294,9 @@
                 <!-- Extras Group -->
                 <div class="bg-[#0d1117] border border-white/5 rounded-lg p-3">
                     <p class="text-[9px] text-pink-400 font-bold mb-2 uppercase tracking-wider">Extras</p>
-                    <div class="grid grid-cols-2 gap-2">
+                    <div class="grid grid-cols-3 gap-2">
                         <div><label class="block text-[9px] text-slate-500 mb-1">MAKEUP</label><input id="p-makeup" placeholder="e.g. Natural, Glam" class="w-full bg-slate-900 border border-white/5 rounded px-2 py-1.5 text-[11px] text-slate-300 focus:border-pink-500 outline-none"></div>
+                        <div><label class="block text-[9px] text-slate-500 mb-1">EYEWEAR</label><input id="p-eyewear" placeholder="e.g. Glasses, None" class="w-full bg-slate-900 border border-white/5 rounded px-2 py-1.5 text-[11px] text-slate-300 focus:border-pink-500 outline-none"></div>
                         <div><label class="block text-[9px] text-slate-500 mb-1">TATTOOS</label><input id="p-tattoos" placeholder="e.g. None, Sleeve" class="w-full bg-slate-900 border border-white/5 rounded px-2 py-1.5 text-[11px] text-slate-300 focus:border-pink-500 outline-none"></div>
                     </div>
                 </div>
@@ -451,6 +453,7 @@
             pHairColor: document.getElementById('p-hair-color'),
             pHairStyle: document.getElementById('p-hair-style'),
             pTattoos: document.getElementById('p-tattoos'),
+            pEyewear: document.getElementById('p-eyewear'),
             pMakeup: document.getElementById('p-makeup'), 
             scanMsg: document.getElementById('scan-msg'),
             scanPreviewCont: document.getElementById('scan-preview-container'),
@@ -475,6 +478,7 @@
             cloudError: document.getElementById('cloud-error'),
             // Styles UI
             openStyleBtn: document.getElementById('open-style-btn'),
+            deleteStyleBtn: document.getElementById('delete-style-btn'),
             styleModal: document.getElementById('style-modal'),
             styleInputRaw: document.getElementById('style-input-raw'),
             analyzeStyleBtn: document.getElementById('analyze-style-btn'),
@@ -594,13 +598,13 @@
         els.modeImage.onclick = () => setInputMode('image');
         els.modeText.onclick = () => setInputMode('text');
 
-        function showNotification(message, type = 'info') {
+        function showNotification(message, type = 'info', duration = 3000) {
             const n = document.createElement('div');
-            n.className = `fixed top-4 right-4 z-[9999] px-6 py-4 rounded-lg border shadow-lg transform transition-all duration-300 translate-x-[400px] bg-[#161b22] ${type === 'success' ? 'border-green-500/30 text-green-400' : type === 'error' ? 'border-red-500/30 text-red-400' : 'border-cyan-500/30 text-cyan-400'}`;
-            n.innerHTML = `<div class="flex items-center gap-3"><div class="text-lg">${type === 'success' ? '✅' : type === 'error' ? '❌' : 'ℹ️'}</div><span class="text-sm font-medium">${message}</span></div>`;
+            n.className = `fixed top-4 right-4 z-[9999] px-6 py-4 rounded-lg border shadow-lg transform transition-all duration-300 translate-x-[400px] bg-[#161b22] ${type === 'success' ? 'border-green-500/30 text-green-400' : type === 'error' ? 'border-red-500/30 text-red-400' : type === 'warning' ? 'border-yellow-500/30 text-yellow-400' : 'border-cyan-500/30 text-cyan-400'}`;
+            n.innerHTML = `<div class="flex items-center gap-3"><div class="text-lg">${type === 'success' ? '✅' : type === 'error' ? '❌' : type === 'warning' ? '⚠️' : 'ℹ️'}</div><span class="text-sm font-medium">${message}</span></div>`;
             document.body.appendChild(n);
             setTimeout(() => n.style.transform = 'translateX(0)', 10);
-            setTimeout(() => { n.style.transform = 'translateX(400px)'; setTimeout(() => n.remove(), 300); }, 3000);
+            setTimeout(() => { n.style.transform = 'translateX(400px)'; setTimeout(() => n.remove(), 300); }, duration);
         }
 
         function showLoading(title, sub) { els.loaderText.innerText = title; els.loaderSub.innerText = sub; els.loader.classList.remove('hidden'); els.actionBtn.disabled = true; }
@@ -674,7 +678,7 @@
                 els.scanBlur.src = els.scanMain.src; 
                 els.manualFields.classList.remove('hidden');
                 const s = p.subject || {}; const bp = s.body_proportions || {}; const h = s.hair || {};
-                els.pAge.value = s.age || ""; els.pEthnicity.value = s.ethnicity || ""; els.pBuild.value = bp.build || s.body_type || ""; els.pChest.value = bp.chest || ""; els.pShoulders.value = bp.shoulders || ""; els.pWaist.value = bp.waist_to_chest_ratio || ""; els.pFace.value = s.face_structure || ""; els.pSkin.value = s.skin || ""; els.pEyes.value = s.eyes || ""; els.pNose.value = s.nose || ""; els.pLips.value = s.lips || ""; els.pTattoos.value = s.tattoos || ""; els.pMakeup.value = s.makeup || ""; els.pHairColor.value = h.color || ""; els.pHairStyle.value = h.style || "";
+                els.pAge.value = s.age || ""; els.pEthnicity.value = s.ethnicity || ""; els.pBuild.value = bp.build || s.body_type || ""; els.pChest.value = bp.chest || ""; els.pShoulders.value = bp.shoulders || ""; els.pWaist.value = bp.waist_to_chest_ratio || ""; els.pFace.value = s.face_structure || ""; els.pSkin.value = s.skin || ""; els.pEyes.value = s.eyes || ""; els.pNose.value = s.nose || ""; els.pLips.value = s.lips || ""; els.pTattoos.value = s.tattoos || ""; els.pEyewear.value = s.eyewear || ""; els.pMakeup.value = s.makeup || ""; els.pHairColor.value = h.color || ""; els.pHairStyle.value = h.style || "";
             }
         }
         
@@ -728,7 +732,7 @@
 
         els.updateManualBtn.onclick = async () => {
             const pid = els.editPid.value; if(!pid) return;
-            const sub = { age: els.pAge.value, ethnicity: els.pEthnicity.value, body_proportions: { build: els.pBuild.value, chest: els.pChest.value, shoulders: els.pShoulders.value, waist_to_chest_ratio: els.pWaist.value }, body_type: els.pBuild.value, face_structure: els.pFace.value, skin: els.pSkin.value, eyes: els.pEyes.value, nose: els.pNose.value, lips: els.pLips.value, tattoos: els.pTattoos.value, makeup: els.pMakeup.value, hair: { color: els.pHairColor.value, style: els.pHairStyle.value } };
+            const sub = { age: els.pAge.value, ethnicity: els.pEthnicity.value, body_proportions: { build: els.pBuild.value, chest: els.pChest.value, shoulders: els.pShoulders.value, waist_to_chest_ratio: els.pWaist.value }, body_type: els.pBuild.value, face_structure: els.pFace.value, skin: els.pSkin.value, eyes: els.pEyes.value, nose: els.pNose.value, lips: els.pLips.value, tattoos: els.pTattoos.value, eyewear: els.pEyewear.value, makeup: els.pMakeup.value, hair: { color: els.pHairColor.value, style: els.pHairStyle.value } };
             await fetch(`/personas/${pid}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ name: els.pName.value, subject: sub }) });
             await loadPersonas(); els.modal.classList.add('hidden'); showNotification(`✅ Updated`, 'success');
         };
@@ -799,6 +803,23 @@
             els.styleModal.classList.add('hidden'); 
             showNotification("✨ Saved", "success");
         };
+        
+        // DELETE STYLE HANDLER
+        els.deleteStyleBtn.onclick = async () => {
+            const name = els.styleNarrative.value;
+            if (name === 'default' || name === 'Standard') {
+                showNotification("⚠️ Cannot delete default style", "warning");
+                return;
+            }
+            if (!confirm(`Delete style "${name}"?`)) return;
+            try {
+                await fetch(`/styles/${encodeURIComponent(name)}`, { method: 'DELETE' });
+                await loadStyles();
+                showNotification("🗑️ Style deleted", "success");
+            } catch(e) {
+                showNotification("❌ Failed to delete", "error");
+            }
+        };
 
         // --- INIT ---
         window.editPersona = (pid) => { els.managerModal.classList.add('hidden'); openModal('edit', pid); };
@@ -834,16 +855,41 @@
 
         (async () => {
             const res = await fetch('/models'); const data = await res.json();
+            
+            // Check if Ollama is running
+            if (data.ollama_running === false) {
+                showNotification("⚠️ Ollama is not running! Start it with 'ollama serve'", "error", 10000);
+                // Show persistent warning banner
+                const banner = document.createElement('div');
+                banner.id = 'ollama-warning';
+                banner.className = 'fixed top-0 left-0 right-0 bg-red-600 text-white text-center py-2 text-sm font-bold z-[100] flex items-center justify-center gap-2';
+                banner.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Ollama is not running. Start it with: <code class="bg-red-800 px-2 py-0.5 rounded ml-1">ollama serve</code> <button onclick="location.reload()" class="ml-4 bg-white text-red-600 px-3 py-1 rounded text-xs font-bold hover:bg-red-100">Retry</button>';
+                document.body.prepend(banner);
+            }
+            
             // Use flat lists from backend - vision_models for vision dropdowns, text_models for writer
-            const visionModels = data.vision_models || ["qwen2.5-vl"];
-            const textModels = data.text_models || data.all_model_names || ["llama3.2"];
+            const visionModels = data.vision_models || [];
+            const textModels = data.text_models || data.all_model_names || [];
             const allModels = data.all_model_names || [...visionModels, ...textModels];
             
+            // If no models, show warning
+            if (visionModels.length === 0 && data.ollama_running !== false) {
+                showNotification("⚠️ No vision models found. Install one with 'ollama pull qwen2.5-vl'", "warning", 8000);
+            }
+            
             const populateVision = (sel, def, key) => { 
+                if (visionModels.length === 0) {
+                    sel.innerHTML = '<option value="">No vision models</option>';
+                    return;
+                }
                 sel.innerHTML = visionModels.map(m => `<option value="${m}">${m}</option>`).join(''); 
                 bindSticky(sel, key, visionModels.find(m => m.includes(def)) || visionModels[0]); 
             };
             const populateText = (sel, def, key) => { 
+                if (allModels.length === 0) {
+                    sel.innerHTML = '<option value="">No models</option>';
+                    return;
+                }
                 sel.innerHTML = allModels.map(m => `<option value="${m}">${m}</option>`).join(''); 
                 bindSticky(sel, key, allModels.find(m => m.includes(def)) || textModels[0] || allModels[0]); 
             };
