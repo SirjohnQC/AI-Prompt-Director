@@ -851,9 +851,44 @@
         els.openStyleBtn.onclick = () => { els.styleModal.classList.remove('hidden'); els.styleInputRaw.value = ""; els.styleAnalysisResult.classList.add('hidden'); };
         els.closeStyleModal.onclick = () => els.styleModal.classList.add('hidden');
         els.analyzeStyleBtn.onclick = async () => {
-            const raw = els.styleInputRaw.value.trim(); if(!raw) return;
-            els.analyzeStyleBtn.innerText = "⏳ ANALYZING..."; els.analyzeStyleBtn.disabled = true;
-            try { const res = await fetch('/styles/analyze', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ prompt: raw, model: els.writerModel.value }) }); const data = await res.json(); els.styleInstruction.value = data.instruction; els.styleAnalysisResult.classList.remove('hidden'); } catch(e) { showNotification("❌ Failed", "error"); } finally { els.analyzeStyleBtn.innerText = "ANALYZE STRUCTURE"; els.analyzeStyleBtn.disabled = false; }
+            const raw = els.styleInputRaw.value.trim(); 
+            if(!raw) return showNotification("⚠️ Please paste a prompt first", "warning");
+            
+            // --- NEW: Friendly "Is Ollama Running?" Check ---
+            const currentModel = els.writerModel.value;
+            
+            // If the value is empty, "loading", or "No models", stop immediately
+            if (!currentModel || currentModel === "" || currentModel === "loading") {
+                showNotification("⚠️ Ollama is not running! Please start it and refresh.", "error");
+                return; 
+            }
+            
+            els.analyzeStyleBtn.innerText = "⏳ ANALYZING..."; 
+            els.analyzeStyleBtn.disabled = true;
+            
+            try { 
+                const res = await fetch('/styles/analyze', { 
+                    method: 'POST', 
+                    headers: {'Content-Type': 'application/json'}, 
+                    body: JSON.stringify({ prompt: raw, model: currentModel }) 
+                }); 
+                const data = await res.json(); 
+
+                // Check for backend errors
+                if (data.status === "error" || !data.instruction) {
+                    throw new Error(data.message || "No instruction returned");
+                }
+
+                els.styleInstruction.value = data.instruction; 
+                els.styleAnalysisResult.classList.remove('hidden'); 
+            } catch(e) { 
+                // Show clean error message
+                showNotification(`❌ ${e.message}`, "error"); 
+            } finally { 
+                // Reset button
+                els.analyzeStyleBtn.innerText = "ANALYZE STRUCTURE"; 
+                els.analyzeStyleBtn.disabled = false; 
+            }
         };
         
         // FIXED SAVE HANDLER
