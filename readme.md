@@ -5,7 +5,6 @@ A powerful local tool to analyze images, extract JSON data, create persona and g
 ## Features
 - 🕵️ **Image Analysis**: Drag & drop images to extract detailed traits (Age, Ethnicity, Outfit, Lighting).
 - 🎭 **Persona System**: Create consistent characters and inject them into any prompt.
-- ☁️ **Cloud Generation**: Generate images using Grok 2, Flux (Fal.ai), or Google Nano directly from the app.
 - 🔄 **Reverse Engineering**: Paste raw text prompts to convert them into structured JSON.
 
 ## Prerequisite
