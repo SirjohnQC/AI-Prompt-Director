@@ -966,6 +966,60 @@ async def memory_stats():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.get("/system/stats")
+async def system_stats():
+    """Get comprehensive system stats for the monitor widget"""
+    result = {
+        "cpu": {"percent": 0},
+        "ram": {"percent": 0, "used_mb": 0, "total_mb": 0},
+        "gpu": {"available": False}
+    }
+    
+    try:
+        import psutil
+        
+        # CPU
+        result["cpu"]["percent"] = psutil.cpu_percent(interval=0.1)
+        
+        # RAM
+        mem = psutil.virtual_memory()
+        result["ram"] = {
+            "percent": round(mem.percent, 1),
+            "used_mb": round(mem.used / 1024 / 1024),
+            "total_mb": round(mem.total / 1024 / 1024)
+        }
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.error(f"CPU/RAM stats error: {e}")
+    
+    # GPU (NVIDIA)
+    try:
+        gpu_result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu', '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, timeout=2
+        )
+        if gpu_result.returncode == 0:
+            parts = [p.strip() for p in gpu_result.stdout.strip().split(',')]
+            if len(parts) >= 4:
+                vram_used = int(parts[1])
+                vram_total = int(parts[2])
+                result["gpu"] = {
+                    "available": True,
+                    "utilization": int(parts[0]),
+                    "vram_used": vram_used,
+                    "vram_total": vram_total,
+                    "vram_percent": round(vram_used / vram_total * 100, 1) if vram_total > 0 else 0,
+                    "temperature": int(parts[3])
+                }
+    except FileNotFoundError:
+        # nvidia-smi not found (no NVIDIA GPU or drivers)
+        pass
+    except Exception as e:
+        logger.error(f"GPU stats error: {e}")
+    
+    return result
+
 @app.post("/system/free-vram")
 async def free_vram():
     """Forces Ollama model unload and Python GC"""

@@ -35,7 +35,7 @@
                     <div class="w-3 h-3 rounded-full bg-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.5)] animate-pulse"></div>
                     PROMPT<span class="font-light text-slate-400">DIRECTOR</span>
                 </h1>
-                <p class="text-[9px] text-slate-500 mt-0.5 uppercase tracking-wider">v2.0 • Intelligent Analysis</p>
+                <p class="text-[9px] text-slate-500 mt-0.5 uppercase tracking-wider"><span id="app-version">v--</span> • Intelligent Analysis</p>
             </div>
         </div>
 
@@ -165,6 +165,34 @@
         <div class="h-14 border-b border-white/5 flex items-center justify-between px-6 bg-[#161b22]/50 backdrop-blur z-30">
             <div class="flex items-center gap-3">
                 <i class="fas fa-code text-cyan-400"></i><span class="text-xs font-mono text-slate-400" id="current-filename">ready.json</span>
+            </div>
+            
+            <!-- System Monitor Widget -->
+            <div id="system-monitor" class="flex items-center gap-3 bg-[#0d1117]/80 border border-white/5 rounded-lg px-3 py-1.5 text-[10px] font-mono">
+                <div class="flex items-center gap-1.5" title="CPU Usage">
+                    <i class="fas fa-microchip text-blue-400"></i>
+                    <span id="mon-cpu" class="text-slate-400">--%</span>
+                </div>
+                <div class="w-px h-4 bg-white/10"></div>
+                <div class="flex items-center gap-1.5" title="GPU Usage">
+                    <i class="fas fa-tv text-green-400"></i>
+                    <span id="mon-gpu" class="text-slate-400">--%</span>
+                </div>
+                <div class="w-px h-4 bg-white/10"></div>
+                <div class="flex items-center gap-1.5" title="VRAM">
+                    <i class="fas fa-memory text-purple-400"></i>
+                    <span id="mon-vram" class="text-slate-400">--/--</span>
+                </div>
+                <div class="w-px h-4 bg-white/10"></div>
+                <div class="flex items-center gap-1.5" title="RAM">
+                    <i class="fas fa-database text-orange-400"></i>
+                    <span id="mon-ram" class="text-slate-400">--%</span>
+                </div>
+                <div class="w-px h-4 bg-white/10"></div>
+                <div class="flex items-center gap-1.5" title="GPU Temperature">
+                    <i class="fas fa-thermometer-half text-red-400"></i>
+                    <span id="mon-temp" class="text-slate-400">--°C</span>
+                </div>
             </div>
             
             <div class="flex items-center gap-2">
@@ -935,7 +963,18 @@
             // BIND STICKY SETTINGS
             bindSticky(els.time, 'time'); bindSticky(els.ratio, 'ratio'); bindSticky(els.styleVisual, 'styleVisual'); bindSticky(els.quality, 'quality'); bindSticky(els.refMode, 'refMode', false); bindSticky(els.cloudModel, 'cloudModel', 'grok'); bindSticky(els.hairStyle, 'hairStyle'); bindSticky(els.hairColor, 'hairColor'); bindSticky(els.makeup, 'makeup'); bindSticky(els.glasses, 'glasses'); bindSticky(els.expr, 'expr');
 
-            try { const vRes = await fetch('/version'); const vData = await vRes.json(); document.title = `AI Prompt Director v${vData.local}`; } catch(e) {}
+            // Load version from version.txt
+            try { 
+                const vRes = await fetch('/version'); 
+                const vData = await vRes.json(); 
+                document.title = `AI Prompt Director v${vData.local}`; 
+                document.getElementById('app-version').textContent = `v${vData.local}`;
+                
+                // Show update indicator if available
+                if (vData.update_available) {
+                    document.getElementById('app-version').innerHTML = `v${vData.local} <span class="text-yellow-400" title="Update available: v${vData.remote}">⬆</span>`;
+                }
+            } catch(e) {}
             
             // Load batch modal
             try {
@@ -953,7 +992,73 @@
                 });
                 console.log('✓ Batch modal loaded');
             } catch(e) { console.error('Failed to load batch modal:', e); }
+            
+            // Start system monitor
+            startSystemMonitor();
         })();
+        
+        // System Monitor - fetch and update stats every 3 seconds
+        function startSystemMonitor() {
+            const monCpu = document.getElementById('mon-cpu');
+            const monGpu = document.getElementById('mon-gpu');
+            const monVram = document.getElementById('mon-vram');
+            const monRam = document.getElementById('mon-ram');
+            const monTemp = document.getElementById('mon-temp');
+            
+            function getColor(percent) {
+                if (percent >= 90) return 'text-red-400';
+                if (percent >= 75) return 'text-yellow-400';
+                return 'text-green-400';
+            }
+            
+            async function updateStats() {
+                try {
+                    const res = await fetch('/system/stats');
+                    const data = await res.json();
+                    
+                    if (data.cpu) {
+                        monCpu.textContent = `${data.cpu.percent}%`;
+                        monCpu.className = getColor(data.cpu.percent);
+                    }
+                    
+                    if (data.ram) {
+                        monRam.textContent = `${data.ram.percent}%`;
+                        monRam.className = getColor(data.ram.percent);
+                    }
+                    
+                    if (data.gpu && data.gpu.available) {
+                        monGpu.textContent = `${data.gpu.utilization || 0}%`;
+                        monGpu.className = getColor(data.gpu.utilization || 0);
+                        
+                        const vramUsed = (data.gpu.vram_used / 1024).toFixed(1);
+                        const vramTotal = (data.gpu.vram_total / 1024).toFixed(1);
+                        monVram.textContent = `${vramUsed}/${vramTotal}G`;
+                        monVram.className = getColor(data.gpu.vram_percent || 0);
+                        
+                        if (data.gpu.temperature) {
+                            monTemp.textContent = `${data.gpu.temperature}°C`;
+                            monTemp.className = data.gpu.temperature >= 80 ? 'text-red-400' : data.gpu.temperature >= 65 ? 'text-yellow-400' : 'text-green-400';
+                        } else {
+                            monTemp.textContent = '--°C';
+                            monTemp.className = 'text-slate-500';
+                        }
+                    } else {
+                        monGpu.textContent = 'N/A';
+                        monGpu.className = 'text-slate-500';
+                        monVram.textContent = 'N/A';
+                        monVram.className = 'text-slate-500';
+                        monTemp.textContent = '--°C';
+                        monTemp.className = 'text-slate-500';
+                    }
+                } catch(e) {
+                    console.error('System monitor error:', e);
+                }
+            }
+            
+            // Initial update and start interval
+            updateStats();
+            setInterval(updateStats, 3000);
+        }
         
         // Batch button handler
         document.getElementById('batch-btn').onclick = () => {
