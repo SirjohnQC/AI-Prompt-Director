@@ -11,6 +11,7 @@ import subprocess
 import zipfile
 import io
 import gc
+import wardrobe
 from PIL import Image, ImageOps
 from pathlib import Path
 from datetime import datetime
@@ -28,6 +29,9 @@ import uvicorn
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Define Base Directory FIRST so we can use it immediately
+BASE_DIR = Path(__file__).parent
+
 app = FastAPI()
 
 app.add_middleware(
@@ -38,10 +42,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- SERVE STATIC FILES ---
+# Use absolute path to avoid "directory not found" errors
+static_path = BASE_DIR / "static"
+if static_path.exists():
+    app.mount("/static", StaticFiles(directory=static_path), name="static")
+else:
+    logger.warning("⚠️ 'static' folder not found! Create it and move app.js/style.css inside.")
+
 # Include batch router
 try:
     from batch import router as batch_router
     app.include_router(batch_router)
+    app.include_router(wardrobe.router)
     logger.info("✓ Batch analyzer module loaded")
 except ImportError as e:
     logger.warning(f"⚠️ Batch module not loaded: {e}")
@@ -51,7 +64,6 @@ except Exception as e:
     logger.error(traceback.format_exc())
 
 # Directories
-BASE_DIR = Path(__file__).parent
 TEMP_DIR = BASE_DIR / "temp"
 HISTORY_DIR = BASE_DIR / "history"
 IMG_DIR = BASE_DIR / "persona_images"
@@ -74,9 +86,8 @@ if not STYLES_FILE.exists():
     with open(STYLES_FILE, "w", encoding="utf-8") as f: 
         json.dump({"Standard": "Write a natural, descriptive sentence."}, f)
 
-# Templates & Static
+# Templates
 templates = Jinja2Templates(directory=BASE_DIR) 
-app.mount("/static", StaticFiles(directory=BASE_DIR), name="static")
 
 # Constants
 DEFAULT_MODELS = ["minicpm-v", "llava:v1.6", "qwen2.5-vl", "llama3.2"]
@@ -492,7 +503,7 @@ async def get_batch_modal():
     if batch_file.exists():
         with open(batch_file, "r", encoding="utf-8") as f:
             return HTMLResponse(content=f.read())
-    return HTMLResponse(content="<!-- Batch modal not found -->")
+    return HTMLResponse(content="")
 
 @app.get("/health")
 async def health_check(): return {"status": "healthy"}
@@ -638,6 +649,7 @@ async def analyze_image(
     text_prompt: Optional[str] = Form(None), 
     model: str = Form("qwen3-vl"),
     persona_id: str = Form("none"),
+    wardrobe_id: str = Form("none"),
     time_override: str = Form("auto"),
     expr_override: str = Form("auto"),
     ratio_override: str = Form("auto"),
@@ -672,6 +684,8 @@ async def analyze_image(
             if not isinstance(data.get(key), dict): data[key] = {}
 
         data = apply_persona_to_data(data, persona_id, reference_mode)
+        
+        data = wardrobe.apply_wardrobe_to_data(data, wardrobe_id)
 
         # Apply Overrides
         if hair_style_override != "auto": 
@@ -850,7 +864,7 @@ async def list_personas():
         data = load_json_file(PERSONA_FILE, {})
         clean = []
         for k, v in data.items():
-            if isinstance(v, dict): clean.append({ "id": k, "name": v.get("name", "Unknown"), "subject": v.get("subject", {}) or v.get("profile", {}) })
+            clean.append({ "id": k, "name": v.get("name", "Unknown"), "subject": v.get("subject", {}) or v.get("profile", {}) })
         return clean
     except: return []
 
@@ -1019,26 +1033,6 @@ async def system_stats():
         logger.error(f"GPU stats error: {e}")
     
     return result
-
-@app.post("/system/free-vram")
-async def free_vram():
-    """Forces Ollama model unload and Python GC"""
-    unloaded = []
-    try:
-        installed_names = get_installed_models()
-        
-        for model_name in installed_names:
-            try:
-                requests.post("http://localhost:11434/api/generate", 
-                            json={"model": model_name, "keep_alive": 0}, timeout=2)
-                unloaded.append(model_name)
-            except: pass
-        
-        gc.collect()
-        logger.info(f"🧹 Unloaded models: {unloaded}")
-        return {"status": "success", "message": f"Unloaded {len(unloaded)} models", "unloaded": unloaded}
-    except Exception as e: 
-        return {"status": "error", "message": str(e)}
 
 @app.get("/history")
 async def get_history(): return load_json_file(HISTORY_FILE, [])
