@@ -3,5 +3,10 @@
     "name": "White stylized top",
     "description": "white ribbed knit one-shoulder crop top with high neckline",
     "type": "top"
+  },
+  "1769178830_bikinitop": {
+    "name": "Bikini top",
+    "description": "A black halter-style bra with a wide neckband and solid color, featuring a padded cup design with a small central cutout and stretchy synthetic fabric construction.",
+    "type": "halter bra"
   }
 }

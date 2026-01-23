@@ -479,7 +479,7 @@ def apply_persona_to_data(data: dict, persona_id: str, use_ref_mode: bool = Fals
         data["subject"]["face"]["makeup"] = p_data["makeup"]
 
     if use_ref_mode:
-        ref_text = f"Maintain consistent appearance of {persona.get('name', 'Character')} from reference image."
+        ref_text = f"Maintain consistent appearance of {persona.get('name', 'Character')} from reference image_0.png ."
         # Force ref instruction to top
         if "reference_image_instruction" in data: del data["reference_image_instruction"]
         data = {"reference_image_instruction": ref_text, **data}
@@ -740,11 +740,32 @@ async def create_persona(
         with open(temp_path, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
         shutil.copy(temp_path, IMG_DIR / f"{safe_id}.jpg")
         
-        system_prompt = """You are an expert Character Designer. Analyze with EXTREME detail.
+        system_prompt = """You are an expert Character Designer. Analyze this person with EXTREME detail.
         Use rich vocabulary (e.g. "piercing crystalline blue"). Describe skin texture, pores, freckles.
-        Return strictly valid JSON: { 
-          "age": "...", "ethnicity": "...", "face": {"eyes": "...", "skin": "...", "hair": "...", "structure": "..."},
-          "body": {"build": "...", "type": "..."}
+        
+        Return strictly valid JSON with this EXACT structure:
+        {
+            "age": "estimated age range (e.g. early 20s, mid 30s)",
+            "ethnicity": "ethnicity/background",
+            "body_type": "body build (e.g. athletic, slim, curvy, petite)",
+            "body_proportions": {
+                "build": "detailed build description",
+                "chest": "chest/bust description",
+                "shoulders": "shoulder width description",
+                "waist_to_chest_ratio": "waist ratio description"
+            },
+            "face_structure": "face shape (e.g. oval, heart-shaped, angular)",
+            "skin": "skin tone and texture description",
+            "eyes": "eye color, shape, and distinctive features",
+            "nose": "nose shape and size",
+            "lips": "lip shape and fullness",
+            "hair": {
+                "color": "hair color",
+                "style": "hair style and length"
+            },
+            "makeup": "makeup style if visible, or 'natural/none'",
+            "eyewear": "glasses description if any, or 'none'",
+            "tattoos": "visible tattoos if any, or 'none'"
         }"""
         
         response = ollama.chat(

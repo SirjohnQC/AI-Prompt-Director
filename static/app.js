@@ -9,6 +9,7 @@ let currentMode = 'json';
 let store = { json: null, prompt: null, tags: null, file: null, url: null };
 let allPersonas = [];
 let scanFile = null;
+let wardrobeFile = null;  // FIX: Added missing variable declaration
 let inputMode = 'image'; 
 let rescanTargetId = null;
 let wardrobeItems = [];
