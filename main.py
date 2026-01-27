@@ -426,8 +426,15 @@ async def enhanced_qwen_analysis(temp_path: Path, model: str) -> dict:
     return data
 
 # --- SHARED PERSONA LOGIC (FIXED) ---
-def apply_persona_to_data(data: dict, persona_id: str, use_ref_mode: bool = False):
-    """Injects persona data into the analysis JSON."""
+def apply_persona_to_data(data: dict, persona_id: str, use_ref_mode: bool = False, hair_source: str = "persona"):
+    """Injects persona data into the analysis JSON.
+    
+    Args:
+        data: The analysis JSON from image
+        persona_id: ID of persona to apply
+        use_ref_mode: Whether to add reference mode instruction
+        hair_source: "persona" (use persona hair), "image" (keep detected), or "manual" (use overrides)
+    """
     if persona_id == "none": return data
     all_personas = load_json_file(PERSONA_FILE)
     if persona_id not in all_personas: return data
@@ -456,14 +463,17 @@ def apply_persona_to_data(data: dict, persona_id: str, use_ref_mode: bool = Fals
         val = p_face.get(key)
         if val: data["subject"]["face"][key] = val
     
-    # Inject hair - check multiple possible locations
-    hair_data = p_data.get("hair") or p_face.get("hair")
-    if hair_data:
-        if isinstance(hair_data, dict):
-            if hair_data.get("color"): data["subject"]["hair"]["color"] = hair_data["color"]
-            if hair_data.get("style"): data["subject"]["hair"]["style"] = hair_data["style"]
-        else:
-            data["subject"]["hair"]["style"] = str(hair_data)
+    # Inject hair - ONLY if hair_source is "persona"
+    if hair_source == "persona":
+        hair_data = p_data.get("hair") or p_face.get("hair")
+        if hair_data:
+            if isinstance(hair_data, dict):
+                if hair_data.get("color"): data["subject"]["hair"]["color"] = hair_data["color"]
+                if hair_data.get("style"): data["subject"]["hair"]["style"] = hair_data["style"]
+            else:
+                data["subject"]["hair"]["style"] = str(hair_data)
+    # If hair_source is "image", we keep what was detected (do nothing)
+    # If hair_source is "manual", the overrides will be applied later in /analyze
 
     if p_data.get("body_type"): data["subject"]["body_type"] = p_data["body_type"]
     if p_data.get("body_proportions"): data["subject"]["body_proportions"] = p_data["body_proportions"]
@@ -479,7 +489,7 @@ def apply_persona_to_data(data: dict, persona_id: str, use_ref_mode: bool = Fals
         data["subject"]["face"]["makeup"] = p_data["makeup"]
 
     if use_ref_mode:
-        ref_text = f"Maintain consistent appearance of {persona.get('name', 'Character')} from reference image_0.png ."
+        ref_text = f"Maintain consistent appearance of {persona.get('name', 'Character')} from reference image img0.png."
         # Force ref instruction to top
         if "reference_image_instruction" in data: del data["reference_image_instruction"]
         data = {"reference_image_instruction": ref_text, **data}
@@ -659,7 +669,8 @@ async def analyze_image(
     hair_color_override: str = Form("auto"),
     makeup_override: str = Form("auto"),
     glasses_override: str = Form("auto"),
-    reference_mode: bool = Form(False) 
+    reference_mode: bool = Form(False),
+    hair_source: str = Form("persona")  # "persona", "image", or "manual" 
 ):
     temp_path = None
     try:
@@ -683,7 +694,7 @@ async def analyze_image(
         for key in ["subject", "environment", "style", "clothing", "pose", "camera"]:
             if not isinstance(data.get(key), dict): data[key] = {}
 
-        data = apply_persona_to_data(data, persona_id, reference_mode)
+        data = apply_persona_to_data(data, persona_id, reference_mode, hair_source)
         
         data = wardrobe.apply_wardrobe_to_data(data, wardrobe_id)
 
@@ -718,9 +729,10 @@ async def inject_persona_endpoint(request: Request):
         req_data = await request.json()
         data = req_data.get("json", {})
         persona_id = req_data.get("persona_id")
-        use_ref_mode = req_data.get("reference_mode", False) 
+        use_ref_mode = req_data.get("reference_mode", False)
+        hair_source = req_data.get("hair_source", "persona")
         if not data or not persona_id: return {"status": "error", "message": "Missing Data"}
-        data = apply_persona_to_data(data, persona_id, use_ref_mode)
+        data = apply_persona_to_data(data, persona_id, use_ref_mode, hair_source)
         return {"status": "success", "json": data}
     except Exception as e: return {"status": "error", "message": str(e)}
 

@@ -78,6 +78,7 @@ const els = {
     makeup: document.getElementById('makeup-select'),
     glasses: document.getElementById('glasses-select'),
     expr: document.getElementById('expr-select'),
+	hairSource: document.getElementById('hair-source-select'),
     addBtn: document.getElementById('add-persona-btn'),
     manageBtn: document.getElementById('manage-personas-btn'),
     modal: document.getElementById('persona-modal'),
@@ -585,7 +586,20 @@ els.actionBtn.onclick = async () => {
         showLoading(inputMode === 'image' ? "ANALYZING" : "PARSING", "Processing...");
         const fd = new FormData();
         if (inputMode === 'image') { if (store.file) fd.append('file', store.file); if (store.url) fd.append('image_url', store.url); fd.append('text_prompt', ''); } else { fd.append('text_prompt', els.textPromptInput.value.trim()); fd.append('image_url', ''); }
-        fd.append('model', els.visionModel.value); fd.append('persona_id', els.persona.value); fd.append('wardrobe_id', els.wardrobeIdHidden.value); fd.append('time_override', els.time.value); fd.append('ratio_override', els.ratio.value); fd.append('style_override', els.styleVisual.value); fd.append('quality_override', els.quality.value); fd.append('hair_style_override', els.hairStyle.value); fd.append('hair_color_override', els.hairColor.value); fd.append('makeup_override', els.makeup.value); fd.append('glasses_override', els.glasses.value); fd.append('expr_override', els.expr.value); fd.append('reference_mode', els.refMode.checked); 
+        fd.append('model', els.visionModel.value); 
+		fd.append('persona_id', els.persona.value); 
+		fd.append('wardrobe_id', els.wardrobeIdHidden.value); 
+		fd.append('time_override', els.time.value); 
+		fd.append('ratio_override', els.ratio.value); 
+		fd.append('style_override', els.styleVisual.value); 
+		fd.append('quality_override', els.quality.value); 
+		fd.append('hair_style_override', els.hairStyle.value); 
+		fd.append('hair_color_override', els.hairColor.value); 
+		fd.append('makeup_override', els.makeup.value); 
+		fd.append('glasses_override', els.glasses.value); 
+		fd.append('expr_override', els.expr.value);
+        fd.append('reference_mode', els.refMode.checked);		
+		fd.append('hair_source', els.hairSource.value);
         try { const res = await fetch('/analyze', { method: 'POST', body: fd }); const data = await res.json(); if (data.error) throw new Error(data.error); store.json = data; store.prompt = null; store.tags = null; jar.updateCode(JSON.stringify(data, null, 2)); updateHistoryUI(); if (currentMode !== 'json') switchTab('json'); showNotification('✨ Done', 'success'); } catch(e) { jar.updateCode(`// ERROR: ${e.message}`); showNotification('❌ Failed', 'error'); } finally { hideLoading(); }
     } else if (currentMode === 'prompt') {
         if (!store.json) return showNotification('⚠️ Generate JSON first', 'warning');
@@ -715,7 +729,7 @@ els.genCloudBtn.onclick = async () => {
 els.persona.addEventListener('change', async () => {
     if (!store.json || Object.keys(store.json).length === 0) return;
     showLoading("SWAPPING", "Injecting new persona...");
-    try { const res = await fetch('/inject-persona', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ json: store.json, persona_id: els.persona.value, reference_mode: els.refMode.checked }) }); const data = await res.json(); if(data.status === 'success') { store.json = data.json; if (currentMode === 'json') jar.updateCode(JSON.stringify(data.json, null, 2)); showNotification(`✨ Switched`, "success"); if (currentMode === 'prompt') els.actionBtn.click(); } } catch(e) { showNotification("❌ Failed", "error"); } finally { hideLoading(); }
+    try { const res = await fetch('/inject-persona', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ json: store.json, persona_id: els.persona.value, reference_mode: els.refMode.checked, hair_source: els.hairSource.value }) }); const data = await res.json(); if(data.status === 'success') { store.json = data.json; if (currentMode === 'json') jar.updateCode(JSON.stringify(data.json, null, 2)); showNotification(`✨ Switched`, "success"); if (currentMode === 'prompt') els.actionBtn.click(); } } catch(e) { showNotification("❌ Failed", "error"); } finally { hideLoading(); }
 });
 
 (async () => {
@@ -763,7 +777,13 @@ els.persona.addEventListener('change', async () => {
     await loadStyles(); 
     updateHistoryUI();
     
-    bindSticky(els.time, 'time'); bindSticky(els.ratio, 'ratio'); bindSticky(els.styleVisual, 'styleVisual'); bindSticky(els.quality, 'quality'); bindSticky(els.refMode, 'refMode', false); bindSticky(els.cloudModel, 'cloudModel', 'grok'); bindSticky(els.hairStyle, 'hairStyle'); bindSticky(els.hairColor, 'hairColor'); bindSticky(els.makeup, 'makeup'); bindSticky(els.glasses, 'glasses'); bindSticky(els.expr, 'expr');
+    bindSticky(els.time, 'time'); bindSticky(els.ratio, 'ratio'); bindSticky(els.styleVisual, 'styleVisual'); bindSticky(els.quality, 'quality'); bindSticky(els.refMode, 'refMode', false); bindSticky(els.cloudModel, 'cloudModel', 'grok'); bindSticky(els.hairStyle, 'hairStyle'); bindSticky(els.hairColor, 'hairColor'); bindSticky(els.makeup, 'makeup'); bindSticky(els.glasses, 'glasses'); bindSticky(els.hairSource, 'hairSource', 'persona');
+	
+	els.hairSource.addEventListener('change', () => {
+    const isManual = els.hairSource.value === 'manual';
+    els.hairStyle.closest('div').parentElement.style.opacity = isManual ? '1' : '0.5';
+    els.hairColor.closest('div').parentElement.style.opacity = isManual ? '1' : '0.5';
+});
 
     try { 
         const vRes = await fetch('/version'); 
