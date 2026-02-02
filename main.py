@@ -11,11 +11,14 @@ import subprocess
 import zipfile
 import io
 import gc
+import sys
+import asyncio
 import wardrobe
 from PIL import Image, ImageOps
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any, List
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -29,10 +32,36 @@ import uvicorn
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Suppress verbose shutdown errors
+logging.getLogger("asyncio").setLevel(logging.WARNING)
+
+# Filter to suppress noisy endpoint logging
+class EndpointFilter(logging.Filter):
+    """Filter out high-frequency endpoint logs to reduce noise"""
+    def filter(self, record):
+        message = record.getMessage()
+        # Suppress /system/stats and /health endpoint logs
+        if '/system/stats' in message or '/health' in message:
+            return False
+        return True
+
+# Apply filter to uvicorn access logger
+logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
+
 # Define Base Directory FIRST so we can use it immediately
 BASE_DIR = Path(__file__).parent
 
-app = FastAPI()
+# Lifespan handler for clean startup/shutdown
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    logger.info("🚀 AI Prompt Director starting up...")
+    yield
+    # Shutdown
+    logger.info("👋 Shutting down gracefully...")
+    gc.collect()
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -62,6 +91,14 @@ except Exception as e:
     logger.error(f"❌ Batch module error: {e}")
     import traceback
     logger.error(traceback.format_exc())
+
+# Include ComfyUI router
+try:
+    from comfyui_integration import router as comfy_router
+    app.include_router(comfy_router)
+    logger.info("✓ ComfyUI integration module loaded")
+except ImportError as e:
+    logger.warning(f"⚠️ ComfyUI module not loaded: {e}")
 
 # Directories
 TEMP_DIR = BASE_DIR / "temp"
@@ -155,16 +192,35 @@ def save_json_file(path: Path, data):
 
 def extract_json_from_text(text: str) -> Dict[str, Any]:
     try:
+        if not text or not text.strip():
+            logger.warning("Empty text received for JSON extraction")
+            return {}
+        
+        # Remove <think>...</think> tags (qwen3 thinking mode)
+        text = re.sub(r'<think>[\s\S]*?</think>', '', text, flags=re.IGNORECASE)
+        
+        # Remove markdown code blocks
         text = re.sub(r'```json\s*', '', text, flags=re.IGNORECASE)
         text = re.sub(r'```\s*', '', text)
+        
+        # Strip whitespace
+        text = text.strip()
+        
+        if not text:
+            logger.warning("Text empty after cleaning think tags")
+            return {}
+        
         start_idx = text.find('{')
         end_idx = text.rfind('}')
-        if start_idx == -1 or end_idx == -1: raise ValueError("No JSON brackets found")
+        if start_idx == -1 or end_idx == -1: 
+            logger.warning(f"No JSON brackets found in: {text[:200]}")
+            raise ValueError("No JSON brackets found")
         json_str = text[start_idx:end_idx + 1]
         try:
             return json.loads(json_str)
         except json.JSONDecodeError:
             pass 
+        # Try to fix common JSON errors
         json_str = re.sub(r'(?<=[}\]"0-9e])\s+(?=")', ', ', json_str)
         json_str = re.sub(r'(?<=true)\s+(?=")', ', ', json_str)
         json_str = re.sub(r'(?<=false)\s+(?=")', ', ', json_str)
@@ -176,10 +232,22 @@ def extract_json_from_text(text: str) -> Dict[str, Any]:
         return {}
 
 def save_history(entry):
+    """Save analysis to history with unique ID"""
+    logger.info(f"[HISTORY] Saving entry for: {entry.get('filename', 'unknown')}")
     history = load_json_file(HISTORY_FILE, [])
     if not isinstance(history, list): history = []
+    
+    # Add unique ID if not present
+    if 'id' not in entry:
+        entry['id'] = f"{int(time.time())}_{len(history)}"
+    
+    # Add prompt_style if not present (default to 'json' for legacy)
+    if 'prompt_style' not in entry:
+        entry['prompt_style'] = entry.get('prompt_style', 'json')
+    
     history.insert(0, entry)
-    save_json_file(HISTORY_FILE, history[:50])
+    save_json_file(HISTORY_FILE, history[:200])  # Increased from 50 to 200
+    logger.info(f"[HISTORY] Saved successfully. Total entries: {len(history)}")
 
 def process_uploaded_image(file: Optional[UploadFile] = None, image_url: Optional[str] = None) -> Path:
     if not file and not image_url: raise HTTPException(status_code=400, detail="No image provided.")
@@ -295,20 +363,63 @@ def validate_vision_model(model: str) -> str:
             
     return found_model
 
+def get_text_model(preferred: str = None) -> str:
+    """Get a text model (non-vision) from installed models."""
+    VISION_KEYWORDS = ["vl", "vision", "llava", "moondream", "bakllava", "minicpm"]
+    TEXT_PREFERENCES = ["llama3.2", "llama3", "mistral", "qwen2.5", "gemma2", "phi"]
+    
+    available_models = get_installed_models()
+    if not available_models:
+        return "llama3.2"  # Default fallback
+    
+    # Filter to text-only models (exclude vision models)
+    text_models = [m for m in available_models if not any(k in m.lower() for k in VISION_KEYWORDS)]
+    
+    if not text_models:
+        # No pure text models - try to use the provided model anyway
+        logger.warning("No text-only models found, using first available")
+        return available_models[0] if available_models else "llama3.2"
+    
+    # Try preferred model first
+    if preferred:
+        # Strip vision suffixes and find a match
+        clean_preferred = preferred.lower().replace("-vl", "").replace(":latest", "")
+        for m in text_models:
+            if clean_preferred in m.lower():
+                logger.info(f"✓ Using text model: {m}")
+                return m
+    
+    # Try preference order
+    for pref in TEXT_PREFERENCES:
+        for m in text_models:
+            if pref in m.lower():
+                logger.info(f"✓ Using text model: {m} (from preferences)")
+                return m
+    
+    # Use first available text model
+    logger.info(f"✓ Using text model: {text_models[0]} (first available)")
+    return text_models[0]
+
 # --- MEMORY OPTIMIZED AI CALLS ---
-async def enhanced_qwen_analysis(temp_path: Path, model: str) -> dict:
+async def enhanced_qwen_analysis(temp_path: Path, model: str, nsfw_mode: bool = False) -> dict:
     # 1. Validate/Switch Model
     effective_model = validate_vision_model(model)
-    logger.info(f"✓ Using vision model: {effective_model}")
+    logger.info(f"✓ Using vision model: {effective_model}, NSFW mode: {nsfw_mode}")
     
     # PASS 1: Scene Analysis (Structure & Camera)
-    complex_prompt = """Analyze this image. Return JSON: 
+    # SFW prompt
+    sfw_prompt = """Analyze this image. Return JSON: 
     { 
       "subject": { 
         "description": "A 1-sentence summary of the subject's ACTION and CONTEXT only. Do NOT describe physical features here.",
         "age": "Estimate",
         "ethnicity": "Estimate",
-        "face": { "expression": "Visible emotion", "eyes": "Color/Shape", "skin": "Texture" }, 
+        "face": { 
+          "expression": "Visible emotion", 
+          "eyes": "Color/Shape", 
+          "skin": "Texture",
+          "makeup": "Makeup style if visible (e.g. 'natural', 'smoky eyes', 'red lipstick', 'heavy glam') or 'none'"
+        }, 
         "hair": { "color": "Color", "style": "Style" },
         "body_type": "SHORT TAG (e.g. Curvy, Athletic)"
       }, 
@@ -324,6 +435,35 @@ async def enhanced_qwen_analysis(temp_path: Path, model: str) -> dict:
       "meta_tokens": ["tag1", "tag2", "tag3"]
     }"""
     
+    # NSFW prompt - uses neutral language but asks for body details
+    nsfw_prompt = """Analyze this image in detail. Return JSON:
+    { 
+      "subject": { 
+        "description": "1-sentence action summary",
+        "age": "Estimate",
+        "ethnicity": "Estimate",
+        "face": { "expression": "...", "eyes": "...", "skin": "...", "makeup": "..." }, 
+        "hair": { "color": "...", "style": "..." },
+        "body_type": "detailed body description",
+        "body_proportions": { 
+          "build": "physique description", 
+          "chest": "upper body description", 
+          "waist": "...", 
+          "hips": "...", 
+          "legs": "..." 
+        }
+      }, 
+      "pose": { "type": "...", "orientation": "..." },
+      "clothing": { "outfit": "full description of what is worn or not worn", "coverage": "full/partial/minimal" }, 
+      "environment": { "location": "...", "lighting": "..." }, 
+      "camera": { "angle": "...", "lens": "...", "quality": "..." },
+      "style": { "aesthetic": "...", "vibe": "..." }, 
+      "meta_tokens": ["tag1", "tag2"]
+    }
+    
+    Be detailed about physical appearance and body shape."""
+    
+    complex_prompt = nsfw_prompt if nsfw_mode else sfw_prompt
     simple_prompt = "Describe this image in JSON format: subject, clothing, environment."
     
     data = {}
@@ -336,7 +476,28 @@ async def enhanced_qwen_analysis(temp_path: Path, model: str) -> dict:
             options={"temperature": 0.1, "num_predict": 4096, "num_ctx": 8192} 
         )
         raw_response = response1['message']['content']
-        logger.info(f"Pass 1 raw response (first 500 chars): {raw_response[:500]}")
+        
+        # Better logging
+        if not raw_response or not raw_response.strip():
+            logger.warning("Pass 1: Model returned EMPTY response!")
+            # If NSFW mode caused empty response, try SFW prompt as fallback
+            if nsfw_mode:
+                logger.info("Pass 1: NSFW mode may have caused refusal, trying SFW prompt...")
+                response1 = ollama.chat(
+                    model=effective_model, 
+                    messages=[{'role': 'user', 'content': sfw_prompt, 'images': [str(temp_path)]}], 
+                    options={"temperature": 0.1, "num_predict": 4096, "num_ctx": 8192} 
+                )
+                raw_response = response1['message']['content']
+                logger.info(f"Pass 1 SFW fallback response (first 500 chars): {raw_response[:500] if raw_response else 'EMPTY'}")
+        elif '<think>' in raw_response.lower():
+            logger.info(f"Pass 1: Response contains <think> tags (length: {len(raw_response)})")
+            # Log what's outside the think tags
+            cleaned = re.sub(r'<think>[\s\S]*?</think>', '', raw_response, flags=re.IGNORECASE).strip()
+            logger.info(f"Pass 1: Content after removing think tags (first 500): {cleaned[:500] if cleaned else 'EMPTY'}")
+        else:
+            logger.info(f"Pass 1 raw response (first 500 chars): {raw_response[:500]}")
+        
         data = extract_json_from_text(raw_response)
         logger.info(f"Pass 1 parsed keys: {list(data.keys()) if data else 'None'}")
     except Exception as e: 
@@ -383,7 +544,7 @@ async def enhanced_qwen_analysis(temp_path: Path, model: str) -> dict:
 
     # PASS 2: Detail Scan
     if data.get("subject"):
-        detail_prompt = """Scan for details. Return JSON:
+        sfw_detail_prompt = """Scan for details. Return JSON:
         {
             "skin_imperfections": "freckles, pores...",
             "body_proportions": { "build": "...", "chest": "...", "shoulders": "...", "waist_ratio": "..." },
@@ -392,6 +553,26 @@ async def enhanced_qwen_analysis(temp_path: Path, model: str) -> dict:
             "camera_tech": "lens type, depth of field, framing...",
             "small_accessories": "jewelry details..."
         }"""
+        
+        nsfw_detail_prompt = """Scan for physical details. Return JSON:
+        {
+            "skin_imperfections": "freckles, moles, tan lines, skin texture...",
+            "body_proportions": { 
+                "build": "overall physique", 
+                "chest": "upper body/chest description", 
+                "shoulders": "shoulder width", 
+                "waist": "waist size",
+                "hips": "hip shape",
+                "lower_body": "lower body description",
+                "legs": "leg description"
+            },
+            "pose_dynamics": "body positioning, weight distribution...",
+            "material_physics": "fabric tension, skin exposure level...",
+            "camera_tech": "lens type, depth of field, focus point...",
+            "small_accessories": "jewelry, piercings..."
+        }"""
+        
+        detail_prompt = nsfw_detail_prompt if nsfw_mode else sfw_detail_prompt
         
         try:
             response2 = ollama.chat(
@@ -405,7 +586,16 @@ async def enhanced_qwen_analysis(temp_path: Path, model: str) -> dict:
                 data["subject"]["face"]["skin"] = str(details["skin_imperfections"])
             
             if details.get("body_proportions"):
-                data["subject"]["body_proportions"] = details["body_proportions"]
+                # Merge with existing or create new
+                if "body_proportions" not in data["subject"]:
+                    data["subject"]["body_proportions"] = {}
+                data["subject"]["body_proportions"].update(details["body_proportions"])
+            
+            # NSFW: Add intimate details
+            if nsfw_mode and details.get("intimate_details"):
+                if "intimate_details" not in data["subject"]:
+                    data["subject"]["intimate_details"] = {}
+                data["subject"]["intimate_details"].update(details["intimate_details"])
 
             if details.get("pose_dynamics"):
                 if "details" not in data["pose"]: data["pose"]["details"] = ""
@@ -670,8 +860,10 @@ async def analyze_image(
     makeup_override: str = Form("auto"),
     glasses_override: str = Form("auto"),
     reference_mode: bool = Form(False),
-    hair_source: str = Form("persona")  # "persona", "image", or "manual" 
+    hair_source: str = Form("persona"),  # "persona", "image", or "manual"
+    nsfw_mode: str = Form("false")  # "true" for detailed body descriptions
 ):
+    nsfw_enabled = nsfw_mode == "true"
     temp_path = None
     try:
         data = {}
@@ -682,7 +874,7 @@ async def analyze_image(
         else:
             temp_path = process_uploaded_image(file, image_url)
             filename = file.filename if file else "url_image.jpg"
-            data = await enhanced_qwen_analysis(temp_path, model)
+            data = await enhanced_qwen_analysis(temp_path, model, nsfw_enabled)
 
             # Check if analysis returned an error (model validation failed)
             if data.get("error"):
@@ -699,10 +891,39 @@ async def analyze_image(
         data = wardrobe.apply_wardrobe_to_data(data, wardrobe_id)
 
         # Apply Overrides
-        if hair_style_override != "auto": 
-             if "face" in data["subject"]: data["subject"]["face"]["hair"] = hair_style_override
-        if time_override != "auto": data["environment"]["time"] = time_override
-        if style_override != "auto": data["style"]["aesthetic"] = style_override
+        # Hair overrides
+        if hair_style_override != "auto":
+            if "hair" not in data["subject"] or not isinstance(data["subject"]["hair"], dict):
+                data["subject"]["hair"] = {}
+            data["subject"]["hair"]["style"] = hair_style_override
+        
+        if hair_color_override != "auto":
+            if "hair" not in data["subject"] or not isinstance(data["subject"]["hair"], dict):
+                data["subject"]["hair"] = {}
+            data["subject"]["hair"]["color"] = hair_color_override
+        
+        # Face/appearance overrides
+        if "face" not in data["subject"] or not isinstance(data["subject"]["face"], dict):
+            data["subject"]["face"] = {}
+        
+        if makeup_override != "auto":
+            data["subject"]["face"]["makeup"] = makeup_override
+        
+        if glasses_override != "auto":
+            if glasses_override.lower() == "none":
+                data["subject"]["face"]["eyewear"] = "none"
+            else:
+                data["subject"]["face"]["eyewear"] = glasses_override
+        
+        if expr_override != "auto":
+            data["subject"]["face"]["expression"] = expr_override
+        
+        # Environment overrides
+        if time_override != "auto": 
+            data["environment"]["time"] = time_override
+        
+        if style_override != "auto": 
+            data["style"]["aesthetic"] = style_override
         
         # Meta Tokens
         if quality_override != "auto":
@@ -723,6 +944,317 @@ async def analyze_image(
             requests.post("http://localhost:11434/api/generate", json={"model": model, "keep_alive": 0}, timeout=1)
         except: pass
 
+
+# --- STREAMING ANALYSIS WITH PROGRESS ---
+def send_sse_event(event_type: str, data: dict) -> str:
+    """Format a Server-Sent Event"""
+    return f"data: {json.dumps({'type': event_type, **data})}\n\n"
+
+
+async def analyze_with_progress_gen(temp_path: Path, model: str, nsfw_mode: bool = False):
+    """Generator that yields progress events during analysis"""
+    
+    yield send_sse_event("progress", {"phase": "Validating model...", "percent": 5})
+    await asyncio.sleep(0.05)
+    
+    effective_model = validate_vision_model(model)
+    model_short = effective_model.split(':')[0] if ':' in effective_model else effective_model
+    
+    yield send_sse_event("progress", {"phase": f"Using {model_short}", "percent": 10})
+    await asyncio.sleep(0.05)
+    
+    yield send_sse_event("progress", {"phase": "Pass 1: Analyzing scene...", "percent": 15})
+    await asyncio.sleep(0.05)
+    
+    sfw_prompt = """Analyze this image. Return JSON: 
+    { 
+      "subject": { 
+        "description": "A 1-sentence summary of the subject's ACTION and CONTEXT only.",
+        "age": "Estimate", "ethnicity": "Estimate",
+        "face": { "expression": "...", "eyes": "...", "skin": "...", "makeup": "..." }, 
+        "hair": { "color": "...", "style": "..." },
+        "body_type": "SHORT TAG"
+      }, 
+      "pose": { "type": "...", "orientation": "...", "limbs": "...", "head": "..." },
+      "clothing": { "outfit": "...", "fit": "...", "accessories": "..." }, 
+      "environment": { "location": "...", "lighting": "..." }, 
+      "camera": { "angle": "...", "lens": "...", "quality": "..." },
+      "style": { "aesthetic": "...", "vibe": "..." }, 
+      "meta_tokens": ["tag1", "tag2", "tag3"]
+    }"""
+    
+    nsfw_prompt = """Analyze this image in detail. Return JSON:
+    { 
+      "subject": { 
+        "description": "1-sentence action summary",
+        "age": "Estimate", "ethnicity": "Estimate",
+        "face": { "expression": "...", "eyes": "...", "skin": "...", "makeup": "..." }, 
+        "hair": { "color": "...", "style": "..." },
+        "body_type": "detailed", 
+        "body_proportions": { "build": "...", "chest": "...", "waist": "...", "hips": "...", "legs": "..." }
+      }, 
+      "pose": { "type": "...", "orientation": "..." },
+      "clothing": { "outfit": "...", "coverage": "..." }, 
+      "environment": { "location": "...", "lighting": "..." }, 
+      "camera": { "angle": "...", "lens": "...", "quality": "..." },
+      "style": { "aesthetic": "...", "vibe": "..." }, 
+      "meta_tokens": ["tag1", "tag2"]
+    }"""
+    
+    complex_prompt = nsfw_prompt if nsfw_mode else sfw_prompt
+    simple_prompt = "Describe this image in JSON format: subject, clothing, environment."
+    
+    data = {}
+    
+    yield send_sse_event("progress", {"phase": "Pass 1: AI processing...", "percent": 25})
+    await asyncio.sleep(0.05)
+    
+    try:
+        response1 = ollama.chat(
+            model=effective_model, 
+            messages=[{'role': 'user', 'content': complex_prompt, 'images': [str(temp_path)]}], 
+            options={"temperature": 0.1, "num_predict": 4096, "num_ctx": 8192} 
+        )
+        raw_response = response1['message']['content']
+        
+        yield send_sse_event("progress", {"phase": "Pass 1: Parsing response...", "percent": 40})
+        await asyncio.sleep(0.05)
+        
+        if not raw_response or not raw_response.strip():
+            if nsfw_mode:
+                yield send_sse_event("progress", {"phase": "Pass 1: Retrying...", "percent": 35})
+                response1 = ollama.chat(
+                    model=effective_model, 
+                    messages=[{'role': 'user', 'content': sfw_prompt, 'images': [str(temp_path)]}], 
+                    options={"temperature": 0.1, "num_predict": 4096, "num_ctx": 8192} 
+                )
+                raw_response = response1['message']['content']
+        
+        data = extract_json_from_text(raw_response)
+        
+    except Exception as e:
+        logger.error(f"Pass 1 error: {e}")
+        yield send_sse_event("progress", {"phase": "Pass 1: Error occurred", "percent": 35})
+    
+    if not data or not data.get("subject"):
+        yield send_sse_event("progress", {"phase": "Pass 1: Using fallback...", "percent": 45})
+        await asyncio.sleep(0.05)
+        try:
+            response_fallback = ollama.chat(
+                model=effective_model, 
+                messages=[{'role': 'user', 'content': simple_prompt, 'images': [str(temp_path)]}], 
+                options={"temperature": 0.2, "num_ctx": 8192}
+            )
+            data = extract_json_from_text(response_fallback['message']['content'])
+        except:
+            data = {}
+    
+    yield send_sse_event("progress", {"phase": "Pass 1: Complete", "percent": 50})
+    await asyncio.sleep(0.05)
+    
+    # Ensure structure
+    if not isinstance(data, dict): data = {}
+    if "subject" not in data: data["subject"] = {}
+    elif isinstance(data["subject"], str): data["subject"] = {"description": data["subject"]}
+    elif not isinstance(data["subject"], dict): data["subject"] = {}
+    
+    for key in ["pose", "clothing", "environment", "style", "camera"]:
+        if key not in data or not isinstance(data[key], dict): data[key] = {}
+    
+    if "face" not in data["subject"] or not isinstance(data["subject"]["face"], dict):
+        data["subject"]["face"] = {}
+    if "hair" not in data["subject"] or not isinstance(data["subject"]["hair"], dict):
+        data["subject"]["hair"] = {}
+    
+    # Pass 2: Detail Scan
+    if data.get("subject"):
+        yield send_sse_event("progress", {"phase": "Pass 2: Scanning details...", "percent": 55})
+        await asyncio.sleep(0.05)
+        
+        detail_prompt = """Scan for details. Return JSON:
+        {
+            "skin_imperfections": "freckles, pores...",
+            "body_proportions": { "build": "...", "chest": "...", "shoulders": "...", "waist_ratio": "..." },
+            "pose_dynamics": "weight distribution...",
+            "material_physics": "fabric tension, drape...",
+            "camera_tech": "lens, depth of field...",
+            "small_accessories": "jewelry..."
+        }"""
+        
+        yield send_sse_event("progress", {"phase": "Pass 2: AI processing...", "percent": 65})
+        await asyncio.sleep(0.05)
+        
+        try:
+            response2 = ollama.chat(
+                model=effective_model, 
+                messages=[{'role': 'user', 'content': detail_prompt, 'images': [str(temp_path)]}], 
+                options={"temperature": 0.1, "num_ctx": 8192} 
+            )
+            details = extract_json_from_text(response2['message']['content'])
+            
+            yield send_sse_event("progress", {"phase": "Pass 2: Merging results...", "percent": 75})
+            await asyncio.sleep(0.05)
+            
+            if details.get("skin_imperfections"):
+                data["subject"]["face"]["skin"] = str(details["skin_imperfections"])
+            if details.get("body_proportions"):
+                if "body_proportions" not in data["subject"]:
+                    data["subject"]["body_proportions"] = {}
+                data["subject"]["body_proportions"].update(details["body_proportions"])
+            if details.get("pose_dynamics"):
+                data["pose"]["details"] = str(details["pose_dynamics"])
+            if details.get("material_physics"):
+                current = data["clothing"].get("fit", "")
+                data["clothing"]["fit"] = f"{current}, {details['material_physics']}".strip(", ")
+            if details.get("camera_tech"):
+                data["camera"]["details"] = str(details["camera_tech"])
+                
+        except Exception as e:
+            logger.error(f"Pass 2 failed: {e}")
+    
+    yield send_sse_event("progress", {"phase": "Analysis complete", "percent": 80})
+    yield send_sse_event("analysis_done", {"data": data})
+
+
+@app.post("/analyze-stream")
+async def analyze_stream(
+    file: Optional[UploadFile] = File(None),
+    image_url: Optional[str] = Form(None),
+    text_prompt: Optional[str] = Form(None),
+    model: str = Form("qwen3-vl"),
+    persona_id: str = Form("none"),
+    wardrobe_id: str = Form("none"),
+    time_override: str = Form("auto"),
+    expr_override: str = Form("auto"),
+    ratio_override: str = Form("auto"),
+    style_override: str = Form("auto"),
+    quality_override: str = Form("auto"),
+    hair_style_override: str = Form("auto"),
+    hair_color_override: str = Form("auto"),
+    makeup_override: str = Form("auto"),
+    glasses_override: str = Form("auto"),
+    reference_mode: bool = Form(False),
+    hair_source: str = Form("persona"),
+    nsfw_mode: str = Form("false")
+):
+    """Streaming analysis with real-time progress updates"""
+    
+    async def event_generator():
+        temp_path = None
+        nsfw_enabled = nsfw_mode == "true"
+        data = {}
+        filename = "unknown"
+        
+        try:
+            yield send_sse_event("progress", {"phase": "Processing image...", "percent": 2})
+            await asyncio.sleep(0.05)
+            
+            if text_prompt and text_prompt.strip():
+                yield send_sse_event("progress", {"phase": "Parsing text input...", "percent": 20})
+                filename = "text_import.json"
+                response = ollama.chat(
+                    model="llama3.2", 
+                    messages=[
+                        {'role': 'system', 'content': 'Convert text to JSON keys: subject, pose, clothing, environment, style.'},
+                        {'role': 'user', 'content': text_prompt}
+                    ], 
+                    format="json", 
+                    options={"num_ctx": 4096}
+                )
+                data = extract_json_from_text(response['message']['content'])
+                yield send_sse_event("progress", {"phase": "Text parsed", "percent": 80})
+            else:
+                temp_path = process_uploaded_image(file, image_url)
+                filename = file.filename if file else "url_image.jpg"
+                
+                async for event in analyze_with_progress_gen(temp_path, model, nsfw_enabled):
+                    yield event
+                    if '"type": "analysis_done"' in event:
+                        event_data = json.loads(event.replace("data: ", "").strip())
+                        data = event_data.get("data", {})
+            
+            if not isinstance(data, dict): data = {}
+            
+            yield send_sse_event("progress", {"phase": "Applying persona...", "percent": 85})
+            await asyncio.sleep(0.05)
+            
+            for key in ["subject", "environment", "style", "clothing", "pose", "camera"]:
+                if not isinstance(data.get(key), dict): data[key] = {}
+            
+            data = apply_persona_to_data(data, persona_id, reference_mode, hair_source)
+            
+            yield send_sse_event("progress", {"phase": "Applying wardrobe...", "percent": 90})
+            await asyncio.sleep(0.05)
+            
+            data = wardrobe.apply_wardrobe_to_data(data, wardrobe_id)
+            
+            yield send_sse_event("progress", {"phase": "Applying overrides...", "percent": 95})
+            await asyncio.sleep(0.05)
+            
+            # Apply overrides
+            if hair_style_override != "auto":
+                if "hair" not in data["subject"] or not isinstance(data["subject"]["hair"], dict):
+                    data["subject"]["hair"] = {}
+                data["subject"]["hair"]["style"] = hair_style_override
+            
+            if hair_color_override != "auto":
+                if "hair" not in data["subject"] or not isinstance(data["subject"]["hair"], dict):
+                    data["subject"]["hair"] = {}
+                data["subject"]["hair"]["color"] = hair_color_override
+            
+            if "face" not in data["subject"] or not isinstance(data["subject"]["face"], dict):
+                data["subject"]["face"] = {}
+            
+            if makeup_override != "auto":
+                data["subject"]["face"]["makeup"] = makeup_override
+            if glasses_override != "auto":
+                data["subject"]["face"]["eyewear"] = "none" if glasses_override.lower() == "none" else glasses_override
+            if expr_override != "auto":
+                data["subject"]["face"]["expression"] = expr_override
+            if time_override != "auto": 
+                data["environment"]["time"] = time_override
+            if style_override != "auto": 
+                data["style"]["aesthetic"] = style_override
+            
+            if quality_override != "auto":
+                if "meta_tokens" not in data: data["meta_tokens"] = []
+                if quality_override == "Best": data["meta_tokens"].extend(["8k", "best quality"])
+                elif quality_override == "Raw": data["meta_tokens"].extend(["raw photo", "film grain"])
+            
+            data["negative_prompt"] = ["lowres", "bad anatomy", "text", "error", "missing fingers", "cropped", "worst quality", "jpeg artifacts"]
+            
+            save_history({
+                "filename": filename, 
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                "model": model, 
+                "persona": persona_id, 
+                "json": data
+            })
+            
+            yield send_sse_event("progress", {"phase": "Complete!", "percent": 100})
+            await asyncio.sleep(0.05)
+            yield send_sse_event("complete", {"data": data})
+            
+        except Exception as e:
+            logger.error(f"Stream analysis error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            yield send_sse_event("error", {"message": str(e)})
+            
+        finally:
+            safe_file_cleanup(temp_path)
+            gc.collect()
+            try:
+                requests.post("http://localhost:11434/api/generate", json={"model": model, "keep_alive": 0}, timeout=1)
+            except: pass
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
+    )
+
+
 @app.post("/inject-persona")
 async def inject_persona_endpoint(request: Request):
     try:
@@ -742,17 +1274,32 @@ async def create_persona(
     file: Optional[UploadFile] = File(None),
     model: str = Form("qwen3-vl"),
     mode: str = Form("create"),
-    pid: Optional[str] = Form(None)
+    pid: Optional[str] = Form(None),
+    rescan: Optional[str] = Form(None),  # "true" to rescan existing image
+    nsfw_mode: Optional[str] = Form("false")  # "true" for detailed body descriptions
 ):
     temp_path = None
     try:
-        if not file: raise HTTPException(status_code=400, detail="File required")
         safe_id = pid if (mode == "edit" and pid) else re.sub(r'[^a-zA-Z0-9]', '_', name.lower())
-        temp_path = TEMP_DIR / f"scan_{file.filename}"
-        with open(temp_path, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
-        shutil.copy(temp_path, IMG_DIR / f"{safe_id}.jpg")
         
-        system_prompt = """You are an expert Character Designer. Analyze this person with EXTREME detail.
+        # Handle rescan - use existing persona image
+        if rescan == "true" and mode == "edit" and pid:
+            existing_img = IMG_DIR / f"{pid}.jpg"
+            if not existing_img.exists():
+                raise HTTPException(status_code=400, detail="No existing image to rescan")
+            temp_path = existing_img
+            logger.info(f"Rescanning existing persona image: {temp_path}")
+        elif file:
+            # New file upload
+            temp_path = TEMP_DIR / f"scan_{file.filename}"
+            with open(temp_path, "wb") as buffer: 
+                shutil.copyfileobj(file.file, buffer)
+            shutil.copy(temp_path, IMG_DIR / f"{safe_id}.jpg")
+        else:
+            raise HTTPException(status_code=400, detail="File required")
+        
+        # Base prompt for SFW mode
+        base_prompt = """You are an expert Character Designer. Analyze this person with EXTREME detail.
         Use rich vocabulary (e.g. "piercing crystalline blue"). Describe skin texture, pores, freckles.
         
         Return strictly valid JSON with this EXACT structure:
@@ -780,6 +1327,44 @@ async def create_persona(
             "tattoos": "visible tattoos if any, or 'none'"
         }"""
         
+        # Enhanced prompt with detailed body descriptions (more subtle language)
+        nsfw_prompt = """You are an expert Character Designer. Analyze this person with detailed physical descriptions.
+        Be specific about body shape, proportions, and features.
+        
+        Return strictly valid JSON with this EXACT structure:
+        {
+            "age": "estimated age range (e.g. early 20s, mid 30s)",
+            "ethnicity": "ethnicity/background",
+            "body_type": "detailed body build (e.g. athletic, slim, curvy, petite)",
+            "body_proportions": {
+                "build": "detailed physique description",
+                "chest": "upper body/chest description",
+                "shoulders": "shoulder width and shape",
+                "waist": "waist size and shape",
+                "hips": "hip width and shape",
+                "lower_body": "lower body description",
+                "legs": "leg length and shape"
+            },
+            "face_structure": "face shape (e.g. oval, heart-shaped, angular)",
+            "skin": "skin tone, texture, and any marks or features",
+            "eyes": "eye color, shape, and distinctive features",
+            "nose": "nose shape and size",
+            "lips": "lip shape, fullness, and color",
+            "hair": {
+                "color": "hair color with highlights/undertones",
+                "style": "hair style and length"
+            },
+            "makeup": "makeup style if visible, or 'natural/none'",
+            "eyewear": "glasses description if any, or 'none'",
+            "tattoos": "all visible tattoos with locations",
+            "piercings": "all visible piercings with locations"
+        }
+        
+        Be detailed about physical appearance."""
+        
+        system_prompt = nsfw_prompt if nsfw_mode == "true" else base_prompt
+        logger.info(f"Creating persona with NSFW mode: {nsfw_mode}")
+        
         response = ollama.chat(
             model=model, 
             messages=[{'role': 'user', 'content': system_prompt, 'images': [str(temp_path)]}], 
@@ -791,7 +1376,10 @@ async def create_persona(
         all_p[safe_id] = { "name": name, "profile": ai_data }
         save_json_file(PERSONA_FILE, all_p)
         return {"status": "success", "id": safe_id, "data": all_p[safe_id]}
-    finally: safe_file_cleanup(temp_path)
+    finally: 
+        # Only cleanup temp file if it's not the existing persona image
+        if temp_path and rescan != "true":
+            safe_file_cleanup(temp_path)
 
 # --- STYLE MANAGER ENDPOINTS ---
 @app.get("/styles")
@@ -832,44 +1420,266 @@ async def delete_style(name: str):
         save_json_file(STYLES_FILE, styles)
     return {"status": "deleted"}
 
+## ============================================================
+# NEW ENDPOINT: Direct Image-to-Prompt (bypasses JSON)
+# ============================================================
+
+@app.post("/generate-prompt-direct")
+async def generate_prompt_direct(
+    file: Optional[UploadFile] = File(None),
+    image_url: Optional[str] = Form(None),
+    text_input: Optional[str] = Form(None),
+    model: str = Form("qwen2.5-vl"),
+    persona_id: str = Form("none"),
+    wardrobe_id: str = Form("none"),
+    prompt_style: str = Form("narrative"),  # narrative, cinematic, booru, minimal
+    style_instruction: Optional[str] = Form(None),
+    time_override: str = Form("auto"),
+    aesthetic_override: str = Form("auto"),
+    expression_override: str = Form("auto"),
+    makeup_override: str = Form("auto"),
+    reference_mode: bool = Form(False),
+    nsfw_mode: str = Form("false")  # "true" for explicit body descriptions
+):
+    """
+    Generate a prompt DIRECTLY from an image - no JSON intermediate step.
+    
+    This is the new primary endpoint for prompt generation.
+    The JSON analysis (/analyze) is now separate and optional.
+    """
+    nsfw_enabled = nsfw_mode == "true"
+    logger.info(f"[DIRECT-PROMPT] Starting with style={prompt_style}, model={model}, persona={persona_id}, nsfw={nsfw_enabled}")
+    temp_path = None
+    
+    try:
+        # Import the direct generator
+        from direct_prompt_generator import (
+            generate_prompt_from_image,
+            generate_prompt_from_text
+        )
+        
+        # Handle text-only input (prompt enhancement/rewriting)
+        if text_input and text_input.strip() and not file and not image_url:
+            text_model = get_text_model(model)  # Get proper text model
+            logger.info(f"[DIRECT-PROMPT] Text-only mode, using text model: {text_model}")
+            result = generate_prompt_from_text(
+                text_description=text_input.strip(),
+                model=text_model,
+                persona_id=persona_id,
+                prompt_style=prompt_style,
+                style_instruction=style_instruction
+            )
+            logger.info(f"[DIRECT-PROMPT] Text result: {result}")
+            return result
+        
+        # Handle image input
+        if not file and not image_url:
+            logger.warning("[DIRECT-PROMPT] No image provided")
+            return {"status": "error", "error": "No image provided"}
+        
+        # Process image
+        logger.info(f"[DIRECT-PROMPT] Processing image...")
+        temp_path = process_uploaded_image(file, image_url)
+        logger.info(f"[DIRECT-PROMPT] Image processed to {temp_path}")
+        
+        # Generate prompt directly from image
+        logger.info(f"[DIRECT-PROMPT] Calling generate_prompt_from_image...")
+        result = generate_prompt_from_image(
+            image_path=str(temp_path),
+            model=model,
+            persona_id=persona_id,
+            wardrobe_id=wardrobe_id,
+            prompt_style=prompt_style,
+            style_instruction=style_instruction,
+            time_override=time_override,
+            aesthetic_override=aesthetic_override,
+            expression_override=expression_override,
+            makeup_override=makeup_override,
+            reference_mode=reference_mode,
+            nsfw_mode=nsfw_enabled,
+            quality_tags=["masterpiece", "best quality", "high resolution"] if prompt_style == "booru" else None
+        )
+        
+        logger.info(f"[DIRECT-PROMPT] Result: {result}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Direct prompt generation error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {"status": "error", "error": str(e)}
+    
+    finally:
+        safe_file_cleanup(temp_path)
+        gc.collect()
+
+
+# ============================================================
+# UPDATED: Keep /generate-prompt for backward compatibility
+# But redirect to new system
+# ============================================================
+
 @app.post("/generate-prompt")
-async def generate_natural_prompt(request: Request):
+async def generate_prompt_legacy(request: Request):
+    """
+    Legacy endpoint - still works with JSON input for backward compatibility.
+    But now uses the improved prompt generation.
+    """
     try:
         data = await request.json()
         json_data = data.get("json")
         model = data.get("model", "llama3.2")
-        style_instruction = data.get("style_instruction", "Write a detailed, natural description.")
-        sys_prompt = f"""You are an AI Image Prompt Writer.
-        INPUT: JSON object describing an image.
-        TASK: Write a text prompt text.
-        STYLE RULES: {style_instruction}
-        IMPORTANT: Only output the prompt. No intro/outro."""
+        style_instruction = data.get("style_instruction", "")
+        prompt_style = data.get("style", "narrative")
+        
+        # If JSON is provided, extract key info and generate
+        from direct_prompt_generator import PromptContext, generate_system_prompt
+        import ollama
+        
+        # Extract subject info from JSON
+        subject = json_data.get("subject", {})
+        clothing = json_data.get("clothing", {})
+        environment = json_data.get("environment", {})
+        pose = json_data.get("pose", {})
+        style = json_data.get("style", {})
+        
+        # Build a text description from JSON
+        description_parts = []
+        
+        if isinstance(subject, dict):
+            subj_parts = []
+            if subject.get("name"):
+                subj_parts.append(subject["name"])
+            if subject.get("age"):
+                subj_parts.append(subject["age"])
+            if subject.get("ethnicity"):
+                subj_parts.append(subject["ethnicity"])
+            if subject.get("gender"):
+                subj_parts.append(subject["gender"])
+            
+            hair = subject.get("hair", {})
+            if isinstance(hair, dict):
+                hair_desc = f"{hair.get('color', '')} {hair.get('style', '')} hair".strip()
+                if hair_desc != "hair":
+                    subj_parts.append(hair_desc)
+            
+            if subj_parts:
+                description_parts.append("Subject: " + ", ".join(subj_parts))
+        
+        if isinstance(clothing, dict):
+            outfit = clothing.get("outfit") or clothing.get("description")
+            if outfit:
+                description_parts.append(f"Wearing: {outfit}")
+            if clothing.get("accessories"):
+                description_parts.append(f"Accessories: {clothing['accessories']}")
+        
+        if isinstance(pose, dict):
+            pose_desc = pose.get("type") or pose.get("position")
+            if pose_desc:
+                description_parts.append(f"Pose: {pose_desc}")
+        
+        if isinstance(environment, dict):
+            loc = environment.get("location") or environment.get("setting")
+            if loc:
+                description_parts.append(f"Setting: {loc}")
+            if environment.get("lighting"):
+                description_parts.append(f"Lighting: {environment['lighting']}")
+        
+        if isinstance(style, dict):
+            aesthetic = style.get("aesthetic") or style.get("vibe")
+            if aesthetic:
+                description_parts.append(f"Style: {aesthetic}")
+        
+        scene_description = "\n".join(description_parts)
+        
+        # Build context
+        ctx = PromptContext(
+            prompt_style=prompt_style,
+            style_instruction=style_instruction if style_instruction else None
+        )
+        
+        system_prompt = generate_system_prompt(ctx)
         
         response = ollama.chat(
-            model=model, 
-            messages=[{'role': 'system', 'content': sys_prompt}, {'role': 'user', 'content': json.dumps(json_data)}],
-            options={"num_ctx": 8192, "temperature": 0.6}
+            model=model,
+            messages=[
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': f"Write a {prompt_style} prompt based on this scene:\n\n{scene_description}"}
+            ],
+            options={"temperature": 0.7, "num_predict": 512}
         )
-        return {"status": "success", "prompt": response['message']['content']}
-    except Exception as e: return {"status": "error", "error": str(e)}
+        
+        prompt = response['message']['content'].strip().strip('"\'')
+        
+        # Clean up
+        bad_starts = ["here is", "here's", "sure,", "certainly,"]
+        for bad in bad_starts:
+            if prompt.lower().startswith(bad):
+                prompt = prompt[len(bad):].strip().lstrip(",:. ")
+                if prompt:
+                    prompt = prompt[0].upper() + prompt[1:]
+                break
+        
+        # Get negative from JSON or use default
+        negative = json_data.get("negative_prompt", [])
+        if isinstance(negative, list):
+            negative = ", ".join(negative)
+        elif not negative:
+            negative = "blurry, distorted, low quality, text, watermark"
+        
+        return {
+            "status": "success",
+            "prompt": prompt,
+            "negative": negative,
+            "style": prompt_style
+        }
+        
+    except Exception as e:
+        logger.error(f"Prompt generation error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {"status": "error", "error": str(e)}
 
-@app.post("/generate-tags")
-async def generate_tags(file: Optional[UploadFile] = File(None), image_url: Optional[str] = Form(None), model: str = Form("qwen3-vl"), persona_id: str = Form("none"), reference_mode: bool = Form(False)):
+
+# ============================================================
+# NEW ENDPOINT: Batch caption generation for LoRA
+# ============================================================
+
+@app.post("/generate-caption")
+async def generate_caption(
+    file: UploadFile = File(...),
+    model: str = Form("qwen2.5-vl"),
+    persona_id: str = Form("none"),
+    caption_style: str = Form("detailed"),  # detailed, simple, tags
+    style_instruction: Optional[str] = Form(None)
+):
+    """
+    Generate a single caption for LoRA training.
+    Optimized for dataset preparation.
+    """
     temp_path = None
+    
     try:
-        temp_path = process_uploaded_image(file, image_url)
-        resp = ollama.chat(
-            model=model, 
-            messages=[{'role': 'user', 'content': "List concise, comma-separated booru tags. Do not use sentences.", 'images': [str(temp_path)]}],
-            options={"num_ctx": 4096}
+        from direct_prompt_generator import generate_caption_for_lora
+        
+        temp_path = process_uploaded_image(file, None)
+        
+        caption = generate_caption_for_lora(
+            image_path=str(temp_path),
+            model=model,
+            persona_id=persona_id,
+            style_instruction=style_instruction,
+            caption_style=caption_style
         )
-        return {"positive_tags": resp['message']['content'], "negative_prompt": "lowres"}
-    finally: 
+        
+        return {"status": "success", "caption": caption}
+        
+    except Exception as e:
+        logger.error(f"Caption generation error: {e}")
+        return {"status": "error", "error": str(e)}
+    
+    finally:
         safe_file_cleanup(temp_path)
-        gc.collect()
-        try:
-            requests.post("http://localhost:11434/api/generate", json={"model": model, "keep_alive": 0}, timeout=1)
-        except: pass
 
 @app.post("/refine")
 async def refine_json(request: Request):
@@ -1068,10 +1878,302 @@ async def system_stats():
     return result
 
 @app.get("/history")
-async def get_history(): return load_json_file(HISTORY_FILE, [])
+async def get_history(
+    search: str = "",
+    sort_by: str = "timestamp",
+    sort_order: str = "desc",
+    limit: int = 200
+):
+    """Enhanced history endpoint with search, sort, and filtering"""
+    logger.info(f"[HISTORY GET] Request: search='{search}', sort_by={sort_by}, limit={limit}")
+    history = load_json_file(HISTORY_FILE, [])
+    if not isinstance(history, list):
+        history = []
+    logger.info(f"[HISTORY GET] Loaded {len(history)} items from file")
+    
+    # Search filter
+    if search:
+        search_lower = search.lower()
+        history = [h for h in history if (
+            search_lower in str(h.get('filename', '')).lower() or
+            search_lower in str(h.get('persona', '')).lower() or
+            search_lower in str(h.get('model', '')).lower() or
+            search_lower in json.dumps(h.get('json', {})).lower()
+        )]
+    
+    # Sort
+    reverse = sort_order == "desc"
+    if sort_by == "timestamp":
+        history.sort(key=lambda x: x.get('timestamp', ''), reverse=reverse)
+    elif sort_by == "filename":
+        history.sort(key=lambda x: x.get('filename', '').lower(), reverse=reverse)
+    elif sort_by == "persona":
+        history.sort(key=lambda x: x.get('persona', 'zzz').lower(), reverse=reverse)
+    elif sort_by == "model":
+        history.sort(key=lambda x: x.get('model', '').lower(), reverse=reverse)
+    
+    # Limit
+    history = history[:limit]
+    
+    return {"items": history, "total": len(history)}
+
+@app.get("/history/{index}")
+async def get_history_item(index: int):
+    """Get a specific history item by index"""
+    history = load_json_file(HISTORY_FILE, [])
+    if not isinstance(history, list) or index < 0 or index >= len(history):
+        raise HTTPException(status_code=404, detail="History item not found")
+    return history[index]
+
+@app.delete("/history/{index}")
+async def delete_history_item(index: int):
+    """Delete a specific history item by index"""
+    history = load_json_file(HISTORY_FILE, [])
+    if not isinstance(history, list) or index < 0 or index >= len(history):
+        raise HTTPException(status_code=404, detail="History item not found")
+    deleted = history.pop(index)
+    save_json_file(HISTORY_FILE, history)
+    return {"status": "deleted", "filename": deleted.get("filename", "unknown")}
 
 @app.delete("/history")
-async def clear_history(): save_json_file(HISTORY_FILE, []); return {"status": "cleared"}
+async def clear_history():
+    save_json_file(HISTORY_FILE, [])
+    return {"status": "cleared"}
+
+
+# ============================================================
+# IMAGE GENERATION ENDPOINT
+# ============================================================
+
+@app.post("/generate-image")
+async def generate_image(request: Request):
+    """
+    Generate an image using various backends.
+    Supports: ComfyUI, Automatic1111, SwarmUI, Fal.ai, Replicate
+    """
+    try:
+        data = await request.json()
+        prompt = data.get("prompt", "")
+        negative_prompt = data.get("negative_prompt", "")
+        backend = data.get("backend", "comfyui")
+        api_url = data.get("api_url", "http://127.0.0.1:8188")
+        width = data.get("width", 1024)
+        height = data.get("height", 1024)
+        steps = data.get("steps", 25)
+        model = data.get("model", "flux")
+        
+        logger.info(f"[IMG GEN] Backend: {backend}, Prompt: {prompt[:50]}...")
+        
+        if backend == "comfyui":
+            return await generate_comfyui(prompt, negative_prompt, api_url, width, height, steps)
+        elif backend == "automatic1111":
+            return await generate_a1111(prompt, negative_prompt, api_url, width, height, steps)
+        elif backend == "swarmui":
+            return await generate_swarmui(prompt, negative_prompt, api_url, width, height, steps)
+        elif backend == "fal":
+            fal_key = data.get("api_key") or ""
+            return await generate_fal(prompt, negative_prompt, fal_key, width, height, steps, model)
+        else:
+            return {"error": f"Unknown backend: {backend}"}
+            
+    except Exception as e:
+        logger.error(f"[IMG GEN] Error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {"error": str(e)}
+
+
+async def generate_comfyui(prompt, negative_prompt, api_url, width, height, steps):
+    """Generate using ComfyUI API"""
+    import uuid
+    import websockets
+    import asyncio
+    
+    # Basic ComfyUI workflow for SDXL/Flux
+    workflow = {
+        "3": {
+            "class_type": "KSampler",
+            "inputs": {
+                "seed": int(time.time()),
+                "steps": steps,
+                "cfg": 7,
+                "sampler_name": "euler",
+                "scheduler": "normal",
+                "denoise": 1,
+                "model": ["4", 0],
+                "positive": ["6", 0],
+                "negative": ["7", 0],
+                "latent_image": ["5", 0]
+            }
+        },
+        "4": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": "sd_xl_base_1.0.safetensors"}
+        },
+        "5": {
+            "class_type": "EmptyLatentImage",
+            "inputs": {"width": width, "height": height, "batch_size": 1}
+        },
+        "6": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": prompt, "clip": ["4", 1]}
+        },
+        "7": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": negative_prompt or "bad quality, blurry", "clip": ["4", 1]}
+        },
+        "8": {
+            "class_type": "VAEDecode",
+            "inputs": {"samples": ["3", 0], "vae": ["4", 2]}
+        },
+        "9": {
+            "class_type": "SaveImage",
+            "inputs": {"filename_prefix": "promptdir", "images": ["8", 0]}
+        }
+    }
+    
+    try:
+        # Queue the prompt
+        client_id = str(uuid.uuid4())
+        res = requests.post(f"{api_url}/prompt", json={
+            "prompt": workflow,
+            "client_id": client_id
+        }, timeout=10)
+        
+        if res.status_code != 200:
+            return {"error": f"ComfyUI error: {res.text}"}
+        
+        prompt_id = res.json().get("prompt_id")
+        logger.info(f"[COMFYUI] Queued prompt: {prompt_id}")
+        
+        # For now, return success - actual image retrieval would need websocket monitoring
+        return {
+            "status": "queued",
+            "prompt_id": prompt_id,
+            "message": "Image queued in ComfyUI. Check ComfyUI interface for result."
+        }
+        
+    except requests.exceptions.ConnectionError:
+        return {"error": "Cannot connect to ComfyUI. Is it running?"}
+    except Exception as e:
+        return {"error": f"ComfyUI error: {str(e)}"}
+
+
+async def generate_a1111(prompt, negative_prompt, api_url, width, height, steps):
+    """Generate using Automatic1111 WebUI API"""
+    try:
+        payload = {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt or "bad quality, blurry",
+            "steps": steps,
+            "width": width,
+            "height": height,
+            "sampler_name": "Euler",
+            "cfg_scale": 7,
+        }
+        
+        res = requests.post(f"{api_url}/sdapi/v1/txt2img", json=payload, timeout=120)
+        
+        if res.status_code != 200:
+            return {"error": f"A1111 error: {res.text}"}
+        
+        result = res.json()
+        if result.get("images"):
+            return {
+                "status": "success",
+                "image_base64": result["images"][0]
+            }
+        else:
+            return {"error": "No image returned"}
+            
+    except requests.exceptions.ConnectionError:
+        return {"error": "Cannot connect to Automatic1111. Is it running?"}
+    except Exception as e:
+        return {"error": f"A1111 error: {str(e)}"}
+
+
+async def generate_swarmui(prompt, negative_prompt, api_url, width, height, steps):
+    """Generate using SwarmUI API"""
+    try:
+        payload = {
+            "prompt": prompt,
+            "negativeprompt": negative_prompt or "bad quality, blurry",
+            "steps": steps,
+            "width": width,
+            "height": height,
+            "cfgscale": 7,
+            "seed": -1
+        }
+        
+        res = requests.post(f"{api_url}/API/GenerateText2Image", json=payload, timeout=120)
+        
+        if res.status_code != 200:
+            return {"error": f"SwarmUI error: {res.text}"}
+        
+        result = res.json()
+        if result.get("images"):
+            return {
+                "status": "success",
+                "image_base64": result["images"][0]
+            }
+        else:
+            return {"status": "queued", "message": "Request sent to SwarmUI"}
+            
+    except requests.exceptions.ConnectionError:
+        return {"error": "Cannot connect to SwarmUI. Is it running?"}
+    except Exception as e:
+        return {"error": f"SwarmUI error: {str(e)}"}
+
+
+async def generate_fal(prompt, negative_prompt, api_key, width, height, steps, model):
+    """Generate using Fal.ai API"""
+    if not api_key:
+        return {"error": "Fal.ai API key not configured. Add it in Settings."}
+    
+    try:
+        headers = {
+            "Authorization": f"Key {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        # Map model names to fal endpoints
+        model_map = {
+            "flux": "fal-ai/flux/schnell",
+            "sdxl": "fal-ai/fast-sdxl",
+            "sd3": "fal-ai/stable-diffusion-v3-medium"
+        }
+        
+        endpoint = model_map.get(model, "fal-ai/flux/schnell")
+        
+        payload = {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "image_size": {"width": width, "height": height},
+            "num_inference_steps": steps
+        }
+        
+        res = requests.post(
+            f"https://fal.run/{endpoint}",
+            headers=headers,
+            json=payload,
+            timeout=120
+        )
+        
+        if res.status_code != 200:
+            return {"error": f"Fal.ai error: {res.text}"}
+        
+        result = res.json()
+        if result.get("images"):
+            return {
+                "status": "success",
+                "image_url": result["images"][0]["url"]
+            }
+        else:
+            return {"error": "No image returned from Fal.ai"}
+            
+    except Exception as e:
+        return {"error": f"Fal.ai error: {str(e)}"}
+
 
 @app.post("/shutdown")
 async def shutdown():
@@ -1081,4 +2183,8 @@ async def shutdown():
     return {"message": "Bye"}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
+    try:
+        uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
+    except KeyboardInterrupt:
+        print("\n👋 Goodbye!")
+        sys.exit(0)

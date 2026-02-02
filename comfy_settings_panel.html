@@ -1,0 +1,271 @@
+<!-- ComfyUI Integration Panel - Add this inside the settings-modal div -->
+<!-- Insert after the "Cloud API Keys" section -->
+
+<div id="comfy-settings-panel" class="mt-6">
+    <h3 class="font-bold text-white mb-3 flex items-center gap-2">
+        <i class="fas fa-desktop text-green-400"></i> ComfyUI (Local Generation)
+    </h3>
+    <div class="space-y-3 bg-[#0d1117] p-3 rounded-lg border border-green-500/20">
+        <!-- Connection -->
+        <div class="grid grid-cols-4 gap-2">
+            <div class="col-span-2">
+                <label class="text-[9px] uppercase text-slate-500 font-bold block mb-1">Host</label>
+                <input id="comfy-host" type="text" value="127.0.0.1" 
+                    class="w-full bg-slate-900 border border-white/5 rounded px-2 py-1.5 text-xs text-white focus:border-green-500 outline-none">
+            </div>
+            <div>
+                <label class="text-[9px] uppercase text-slate-500 font-bold block mb-1">Port</label>
+                <input id="comfy-port" type="number" value="8188" 
+                    class="w-full bg-slate-900 border border-white/5 rounded px-2 py-1.5 text-xs text-white focus:border-green-500 outline-none">
+            </div>
+            <div class="flex items-end">
+                <button id="test-comfy-btn" 
+                    class="w-full bg-green-600/20 hover:bg-green-600 text-green-400 hover:text-white py-1.5 rounded font-bold text-[10px] border border-green-500/30 transition-all">
+                    <i class="fas fa-plug"></i> TEST
+                </button>
+            </div>
+        </div>
+        
+        <!-- Status indicator -->
+        <div id="comfy-status" class="text-[10px] text-center py-1 rounded hidden"></div>
+        
+        <!-- Model Selection -->
+        <div>
+            <label class="text-[9px] uppercase text-slate-500 font-bold block mb-1">
+                Checkpoint Model <span class="text-slate-600">(auto-loads when connected)</span>
+            </label>
+            <select id="comfy-checkpoint" 
+                class="w-full bg-slate-900 border border-white/5 rounded px-2 py-1.5 text-xs text-slate-300 focus:border-green-500 outline-none">
+                <option value="">Default / Auto-detect</option>
+            </select>
+        </div>
+        
+        <!-- Generation Parameters -->
+        <div class="grid grid-cols-4 gap-2">
+            <div>
+                <label class="text-[9px] uppercase text-slate-500 font-bold block mb-1">Steps</label>
+                <input id="comfy-steps" type="number" value="25" min="1" max="150" 
+                    class="w-full bg-slate-900 border border-white/5 rounded px-2 py-1.5 text-xs text-white focus:border-green-500 outline-none">
+            </div>
+            <div>
+                <label class="text-[9px] uppercase text-slate-500 font-bold block mb-1">CFG</label>
+                <input id="comfy-cfg" type="number" value="7" min="1" max="30" step="0.5" 
+                    class="w-full bg-slate-900 border border-white/5 rounded px-2 py-1.5 text-xs text-white focus:border-green-500 outline-none">
+            </div>
+            <div>
+                <label class="text-[9px] uppercase text-slate-500 font-bold block mb-1">Width</label>
+                <select id="comfy-width" 
+                    class="w-full bg-slate-900 border border-white/5 rounded px-2 py-1.5 text-xs text-slate-300 focus:border-green-500 outline-none">
+                    <option value="512">512</option>
+                    <option value="768">768</option>
+                    <option value="1024" selected>1024</option>
+                    <option value="1280">1280</option>
+                </select>
+            </div>
+            <div>
+                <label class="text-[9px] uppercase text-slate-500 font-bold block mb-1">Height</label>
+                <select id="comfy-height" 
+                    class="w-full bg-slate-900 border border-white/5 rounded px-2 py-1.5 text-xs text-slate-300 focus:border-green-500 outline-none">
+                    <option value="512">512</option>
+                    <option value="768">768</option>
+                    <option value="1024" selected>1024</option>
+                    <option value="1280">1280</option>
+                </select>
+            </div>
+        </div>
+        
+        <div class="grid grid-cols-2 gap-2">
+            <div>
+                <label class="text-[9px] uppercase text-slate-500 font-bold block mb-1">Sampler</label>
+                <select id="comfy-sampler" 
+                    class="w-full bg-slate-900 border border-white/5 rounded px-2 py-1.5 text-xs text-slate-300 focus:border-green-500 outline-none">
+                    <option value="euler">Euler</option>
+                    <option value="euler_ancestral">Euler Ancestral</option>
+                    <option value="dpmpp_2m">DPM++ 2M</option>
+                    <option value="dpmpp_2m_sde">DPM++ 2M SDE</option>
+                    <option value="dpmpp_sde">DPM++ SDE</option>
+                    <option value="ddim">DDIM</option>
+                    <option value="uni_pc">UniPC</option>
+                </select>
+            </div>
+            <div>
+                <label class="text-[9px] uppercase text-slate-500 font-bold block mb-1">Scheduler</label>
+                <select id="comfy-scheduler" 
+                    class="w-full bg-slate-900 border border-white/5 rounded px-2 py-1.5 text-xs text-slate-300 focus:border-green-500 outline-none">
+                    <option value="normal">Normal</option>
+                    <option value="karras">Karras</option>
+                    <option value="exponential">Exponential</option>
+                    <option value="sgm_uniform">SGM Uniform</option>
+                    <option value="simple">Simple</option>
+                </select>
+            </div>
+        </div>
+        
+        <!-- Quick Tips -->
+        <div class="bg-green-500/10 border border-green-500/20 rounded p-2 text-[10px] text-green-300 space-y-1">
+            <p><i class="fas fa-lightbulb mr-1"></i> <strong>Quick Start:</strong></p>
+            <ul class="list-disc list-inside text-green-200/80 space-y-0.5 ml-2">
+                <li>Start ComfyUI: <code class="bg-green-900/50 px-1 rounded">python main.py --listen</code></li>
+                <li>For Flux: use <code class="bg-green-900/50 px-1 rounded">CFG 1</code>, <code class="bg-green-900/50 px-1 rounded">Simple</code> scheduler</li>
+                <li>For SDXL: use <code class="bg-green-900/50 px-1 rounded">CFG 7</code>, <code class="bg-green-900/50 px-1 rounded">Karras</code> scheduler</li>
+            </ul>
+        </div>
+    </div>
+</div>
+
+<script>
+// ComfyUI Integration JavaScript
+(function() {
+    const comfyEls = {
+        host: document.getElementById('comfy-host'),
+        port: document.getElementById('comfy-port'),
+        checkpoint: document.getElementById('comfy-checkpoint'),
+        steps: document.getElementById('comfy-steps'),
+        cfg: document.getElementById('comfy-cfg'),
+        width: document.getElementById('comfy-width'),
+        height: document.getElementById('comfy-height'),
+        sampler: document.getElementById('comfy-sampler'),
+        scheduler: document.getElementById('comfy-scheduler'),
+        testBtn: document.getElementById('test-comfy-btn'),
+        status: document.getElementById('comfy-status')
+    };
+    
+    // Load saved settings
+    function loadComfySettings() {
+        const settings = {
+            host: '127.0.0.1',
+            port: '8188',
+            steps: '25',
+            cfg: '7',
+            width: '1024',
+            height: '1024',
+            sampler: 'euler',
+            scheduler: 'normal',
+            checkpoint: ''
+        };
+        
+        Object.keys(settings).forEach(key => {
+            const saved = localStorage.getItem(`comfy_${key}`);
+            if (saved !== null && comfyEls[key]) {
+                comfyEls[key].value = saved;
+            } else if (comfyEls[key]) {
+                comfyEls[key].value = settings[key];
+            }
+        });
+    }
+    
+    // Save settings on change
+    function saveComfySettings() {
+        ['host', 'port', 'checkpoint', 'steps', 'cfg', 'width', 'height', 'sampler', 'scheduler'].forEach(key => {
+            if (comfyEls[key]) {
+                localStorage.setItem(`comfy_${key}`, comfyEls[key].value);
+            }
+        });
+    }
+    
+    // Bind save to all inputs
+    Object.keys(comfyEls).forEach(key => {
+        if (comfyEls[key] && key !== 'testBtn' && key !== 'status') {
+            comfyEls[key].addEventListener('change', saveComfySettings);
+        }
+    });
+    
+    // Test connection
+    async function testComfyConnection() {
+        if (!comfyEls.testBtn) return;
+        
+        comfyEls.testBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+        comfyEls.testBtn.disabled = true;
+        comfyEls.status.classList.remove('hidden');
+        comfyEls.status.className = 'text-[10px] text-center py-1 rounded text-yellow-400 bg-yellow-500/10';
+        comfyEls.status.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-1"></i>Connecting...';
+        
+        try {
+            // Configure connection
+            await fetch('/comfy/configure', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    host: comfyEls.host.value,
+                    port: parseInt(comfyEls.port.value),
+                    use_https: false
+                })
+            });
+            
+            // Test status
+            const res = await fetch('/comfy/status');
+            const data = await res.json();
+            
+            if (data.connected) {
+                comfyEls.status.className = 'text-[10px] text-center py-1 rounded text-green-400 bg-green-500/10';
+                comfyEls.status.innerHTML = '<i class="fas fa-check-circle mr-1"></i>Connected! Loading models...';
+                
+                // Load checkpoints
+                try {
+                    const cpRes = await fetch('/comfy/checkpoints');
+                    const cpData = await cpRes.json();
+                    
+                    if (cpData.checkpoints && cpData.checkpoints.length > 0) {
+                        comfyEls.checkpoint.innerHTML = '<option value="">Default / Auto-detect</option>' +
+                            cpData.checkpoints.map(c => `<option value="${c}">${c}</option>`).join('');
+                        
+                        const saved = localStorage.getItem('comfy_checkpoint');
+                        if (saved && cpData.checkpoints.includes(saved)) {
+                            comfyEls.checkpoint.value = saved;
+                        }
+                        
+                        comfyEls.status.innerHTML = `<i class="fas fa-check-circle mr-1"></i>Connected! ${cpData.checkpoints.length} models found`;
+                    }
+                } catch(e) {
+                    console.warn('Could not load checkpoints:', e);
+                }
+                
+                if (typeof showNotification === 'function') {
+                    showNotification('✅ ComfyUI Connected!', 'success');
+                }
+            } else {
+                comfyEls.status.className = 'text-[10px] text-center py-1 rounded text-red-400 bg-red-500/10';
+                comfyEls.status.innerHTML = `<i class="fas fa-times-circle mr-1"></i>${data.message || 'Connection failed'}`;
+            }
+        } catch(e) {
+            comfyEls.status.className = 'text-[10px] text-center py-1 rounded text-red-400 bg-red-500/10';
+            comfyEls.status.innerHTML = `<i class="fas fa-times-circle mr-1"></i>Error: ${e.message}`;
+        } finally {
+            comfyEls.testBtn.innerHTML = '<i class="fas fa-plug"></i> TEST';
+            comfyEls.testBtn.disabled = false;
+        }
+    }
+    
+    if (comfyEls.testBtn) {
+        comfyEls.testBtn.onclick = testComfyConnection;
+    }
+    
+    // Expose settings getter globally
+    window.getComfySettings = function() {
+        return {
+            host: comfyEls.host?.value || '127.0.0.1',
+            port: parseInt(comfyEls.port?.value || '8188'),
+            checkpoint: comfyEls.checkpoint?.value || null,
+            steps: parseInt(comfyEls.steps?.value || '25'),
+            cfg: parseFloat(comfyEls.cfg?.value || '7'),
+            width: parseInt(comfyEls.width?.value || '1024'),
+            height: parseInt(comfyEls.height?.value || '1024'),
+            sampler: comfyEls.sampler?.value || 'euler',
+            scheduler: comfyEls.scheduler?.value || 'normal'
+        };
+    };
+    
+    // Initialize
+    loadComfySettings();
+    
+    // Auto-test on settings open (optional - can be removed)
+    document.getElementById('settings-btn')?.addEventListener('click', () => {
+        setTimeout(() => {
+            if (comfyEls.status && comfyEls.status.classList.contains('hidden')) {
+                // Only auto-test if we haven't tested yet
+                // testComfyConnection();
+            }
+        }, 500);
+    });
+})();
+</script>
